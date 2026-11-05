@@ -184,3 +184,26 @@ def test_after_close_quotes_expire_at_next_open_not_midnight():
     assert result['valid_until'] == '2026-11-06T09:30:00-05:00'
     next_open = datetime(2026,11,6,14,30,tzinfo=timezone.utc)
     assert value_portfolio(conn, 10000., SESSION, next_open)['net_value'] is None
+
+
+def test_unavailable_net_cannot_claim_zero_dollar_quarterly_goals_or_zero_capital_needed():
+    source = (Path(__file__).resolve().parents[1] / 'generate_dashboard.py').read_text()
+    start = source.index('function renderGoalsCard()')
+    end = source.index('// Auto-load dividends', start)
+    function = source[start:end].replace('{{', '{').replace('}}', '}')
+    js = '''
+const nodes = {};
+const document = {getElementById:id=>nodes[id] ||= {style:{}}};
+const D = {totalValue:null,grossStockValue:10000,layerColorsByNum:{}};
+const CURRENT_BRACKET = {qualified:0,niit:0};
+const _divData = {results:[{annual_income:1200,tax_type:'qualified'}]};
+function effectiveRate(){return 0;}
+function _flashEl(){}
+''' + function + '''
+renderGoalsCard();
+const goals = nodes['goal-div-milestones'].innerHTML;
+if (!goals.includes('Valuation unavailable')) throw Error('missing unavailable state');
+if (goals.includes('deploy ~$0')) throw Error('fabricated zero capital recommendation');
+if (nodes['goal-port-pct'].textContent !== 'Net value unavailable') throw Error('zero target progress');
+'''
+    subprocess.run(['node','-e',js], check=True, capture_output=True, text=True)

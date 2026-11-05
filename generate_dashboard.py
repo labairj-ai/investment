@@ -4351,7 +4351,9 @@ function renderGoalsCard() {{
 
       // Portfolio status badge
       let portBadge;
-      if (isCurrent) {{
+      if (pRate == null) {{
+        portBadge = '<span style="color:#888;font-size:10px;">Valuation unavailable</span>';
+      }} else if (isCurrent) {{
         portBadge = portQOnTrack
           ? `<span style="background:#dbeafe;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600;">✓ On track</span>`
           : `<span style="background:#fef9e7;color:#9a6700;border:1px solid #f9e79f;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600;">⚠ ${{fmt$(portQGap)}} behind</span>`;
@@ -4363,7 +4365,7 @@ function renderGoalsCard() {{
 
       // Dividend recommendation
       let divRec = "";
-      if (!divOnTrack) {{
+      if (!divOnTrack && portYield > 0) {{
         const capitalNeeded = portYield > 0 ? (divGap * 12) / portYield : 0;
         divRec = `<span style="font-size:10px;color:#aaa;"> · deploy ~${{fmt$(capitalNeeded)}} at ${{(portYield*100).toFixed(1)}}% yield</span>`;
       }}
@@ -4383,7 +4385,7 @@ function renderGoalsCard() {{
             <span style="font-weight:${{fw}};color:${{tcol}};font-size:11px;">${{fmtM(divTarget)}}</span>
             ${{divBadge}}
             <span style="font-size:10px;color:#aaa;margin-left:4px;">Port:</span>
-            <span style="font-weight:${{fw}};color:${{tcol}};font-size:11px;">${{fmt$(portTarget)}}</span>
+            <span style="font-weight:${{fw}};color:${{tcol}};font-size:11px;">${{pRate != null ? fmt$(portTarget) : '—'}}</span>
             ${{portBadge}}
           </div>
           ${{!divOnTrack ? `<div style="font-size:10px;color:#aaa;margin-top:2px;padding-left:0;">→ Need +${{fmtM(divGap)}}${{divRec}}</div>` : ""}}
