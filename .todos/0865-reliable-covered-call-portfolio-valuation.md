@@ -4,7 +4,7 @@
 - **Status:** in-progress
 - **Created:** 2026-11-05
 - **Priority:** high
-- **Risk:** L4 conservative; display valuation and shared legacy mark refresh, no policy or execution changes
+- **Risk:** L5 per risk-surface-2 whole-diff classification (unknown dashboard surface and unresolved dynamic protected dependency); display valuation and shared legacy mark refresh, no policy or execution changes
 - **Source:** Owner request to reconcile recurring portfolio value mismatch; reference approximately $221,170.15
 - **Base:** d36b7b415517424b5c20bbfe952c98a1d294d502
 
