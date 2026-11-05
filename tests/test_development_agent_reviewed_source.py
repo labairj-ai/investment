@@ -1,15 +1,33 @@
 """Discovery consumes exact Git blobs; whole-worktree safety stays conservative."""
 import json
+import hashlib
 import subprocess
 from pathlib import Path
 import pytest
 from dev_agent import discovery,policy,scheduler,reviewed_source as rs
-from dev_agent.store import Store
+from dev_agent.store import Store, bounded
 from test_development_agent import repo,commit,proposal
 
 
 def add(root,name,text):
     p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text);return p
+
+
+@pytest.mark.parametrize('body',[
+    'Export redaction blocks credentials/bearer tokens/headers, raw prompts.',
+    'Synthetic credential example: password=fixture-only',
+    'Large reviewed TODO prose.\n'*2000,
+])
+def test_active_todo_hash_does_not_validate_or_persist_document_text(repo,body):
+    text='- **Status:** in-progress\n'+body
+    with pytest.raises(ValueError):bounded(text)
+    add(repo,'.todos/1000-reviewed.md',text);commit(repo)
+    context=discovery.scout(repo)['context']
+    assert context['active_todos']==[dict(path='.todos/1000-reviewed.md',hash=hashlib.sha256(text.encode()).hexdigest())]
+    assert body not in json.dumps(context)
+    bounded(context)
+    # The metadata boundary still rejects the same input.
+    with pytest.raises(ValueError):bounded(text)
 
 
 def test_untracked_architecture_source_and_context_cannot_change_scout(repo):

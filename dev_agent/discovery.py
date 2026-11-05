@@ -121,7 +121,8 @@ def scout(root, signals=(), cap=5, exclusions=None, suppressed=(), enabled_sourc
         if not rel.startswith('.todos/') or rel.count('/')!=1 or not rel.endswith('.md'):continue
         text = reviewed.texts[rel]
         if "**Status:** backlog" in text or "**Status:** in-progress" in text:
-            active_todos.append(dict(path=rel, hash=digest(text)))
+            # Reviewed document text is source, not ledger metadata; retain only its hash.
+            active_todos.append(dict(path=rel, hash=hashlib.sha256(text.encode()).hexdigest()))
     recent = git(root, "--no-replace-objects", "log", "-5", "--format=%H %s",head).splitlines()
     completed = [p for p in reviewed.paths if p.startswith('.todos/done/') and p.count('/')==2 and p.endswith('.md')][-10:]
     current(root,head)
