@@ -80,8 +80,19 @@ def value_portfolio(conn, gross_value, stock_session, now=None):
     now = now or now_utc()
     gross_value = number(gross_value)
     session = reporting_session(now)
+    snapshot_day = stock_session
+    try:
+        labelled = date.fromisoformat(stock_session)
+        local = now.astimezone(TZ_EASTERN)
+        reference = now if labelled==local.date() else datetime.combine(labelled,time(16),TZ_EASTERN)
+        # Newsletter rows are labelled by generation day, including premarket
+        # and weekends; their regular-session prices belong to the prior session.
+        stock_session = reporting_session(reference)
+    except (TypeError,ValueError):
+        stock_session = None
     result = dict(gross_stock_value=gross_value, net_value=None, call_liability=None,
                   complete=False, session=session, stock_session=stock_session,
+                  stock_snapshot_day=snapshot_day,
                   open_count=0, priced_count=0, issues=[], observations=[],
                   reconciled_to_broker=False, source=SOURCE, valid_until=None)
     if number(gross_value) is None:

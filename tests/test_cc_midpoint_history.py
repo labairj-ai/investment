@@ -207,3 +207,17 @@ def test_historical_invalid_spread_does_not_complete_the_day():
 def test_live_value_rejects_nonfinite_result_even_for_finite_inputs():
     c=book();save(c,quote(mark=1.e308,mark_basis='PROVIDER_MARK'))
     assert value_portfolio(c,10000.,'2026-11-05',NOW)['net_value'] is None
+
+
+@pytest.mark.parametrize('snapshot,now,mark_session,observed',[
+    ('2026-11-06','2026-11-06T13:00:00Z','2026-11-05','2026-11-05T21:05:00Z'),
+    ('2026-11-07','2026-11-07T16:00:00Z','2026-11-06','2026-11-06T21:05:00Z'),
+])
+def test_snapshot_generation_date_does_not_hide_previous_session_closing_marks(snapshot,now,mark_session,observed):
+    c=book()
+    pnl.save_quote(c,P,mark_session,quote(),None,observed)
+    stamp=datetime.fromisoformat(now.replace('Z','+00:00'))
+    value=value_portfolio(c,10000.,snapshot,stamp)
+    assert value['net_value']==9100.
+    assert value['stock_session']==mark_session
+    assert value['stock_snapshot_day']==snapshot
