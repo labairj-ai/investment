@@ -6,6 +6,9 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
@@ -483,3 +486,51 @@ def test_audit_owner_context_and_disposition_are_inspectable_claims(center,store
 def test_untrusted_head_metadata_is_never_echoed_or_credited(center,head):
     d=center.judgment('PASS','TEST','Test',observed=center.now,head=head,verifier='EXISTING_GATE')
     assert d['head_sha'] is None and d['status']=='UNAVAILABLE' and 'PRIVATE' not in json.dumps(d)
+
+
+def test_overview_latest_scout_discoveries_are_separate_from_priority(center, store, monkeypatch):
+    from dev_agent import scheduler_health
+    old = [candidate(store, n) for n in range(5)]
+    start = time.time()
+    fresh = [candidate(store, n) for n in range(5, 9)]
+    end = time.time()
+    run = dict(status='COLLECTED', slot='scout:'+datetime.fromtimestamp(start, ZoneInfo('America/New_York')).date().isoformat(),
+               head=center.head, started_at=start, ended_at=end, duration_seconds=end-start,
+               trigger=dict(source='systemd-observed-timer', invocation='a'*32),
+               candidates=fresh+[old[0]], created=4)
+    store.event(None, 'SCHEDULE', run, 'latest-scout')
+    monkeypatch.setattr(scheduler_health, 'acceptance', lambda *a: dict(successful_runs=1, required_runs=3, source_head=center.head))
+    monkeypatch.setattr(center, 'projections', lambda: dict(owner={'status':'NOT READY','reason':'Fixture'}, blockers=[]))
+    before = fingerprint(store)
+    overview = center.overview()
+    assert [c['id'] for c in overview['priority_queue']] == old
+    assert [c['id'] for c in overview['scout']['items']] == fresh
+    assert overview['scout']['latest_run']['candidates_discovered'] == 4
+    assert overview['scout']['acceptance']['successful_runs'] == 1
+    assert {c['id'] for c in center.candidates('sort=newest&limit=4')['items']} == set(fresh)
+    assert fingerprint(store) == before
+
+
+def test_latest_scout_failure_preserves_previous_discoveries(center, store, monkeypatch):
+    from dev_agent import scheduler_health
+    cid = candidate(store)
+    with store.connect() as db:
+        created = db.execute('SELECT created FROM dev_candidates WHERE id=?', (cid,)).fetchone()[0]
+    run = dict(status='COLLECTED', slot='scout:'+datetime.fromtimestamp(created, ZoneInfo('America/New_York')).date().isoformat(),
+               head=center.head, started_at=created-1, ended_at=created+1, duration_seconds=2,
+               trigger=dict(source='systemd-observed-timer', invocation='a'*32), candidates=[cid], created=1)
+    store.event(None, 'SCHEDULE', run, 'success')
+    store.event(None, 'SCHEDULE_FAILURE', dict(run, status='FAILED', trigger=dict(source='systemd-observed-timer', invocation='b'*32)), 'failure')
+    store.event(None, 'SCHEDULE', dict(run, fixture_only=True), 'fixture-run')
+    monkeypatch.setattr(scheduler_health, 'acceptance', lambda *a: {})
+    result = center.scout_discoveries()
+    assert result['latest_run']['status'] == 'FAILED'
+    assert result['latest_successful_run']['status'] == 'COLLECTED'
+    assert [c['id'] for c in result['items']] == [cid]
+
+
+def test_overview_scout_discovery_sections_reuse_candidate_cards():
+    source = (ROOT/'dev_agent/control_center_assets/control-center.js').read_text()
+    for label in ('Latest Scout Run', 'New Discoveries', 'Priority queue', 'Acceptance:'):
+        assert label in source
+    assert 'for(const c of scout.items||[])fresh.append(card(c))' in source

@@ -338,6 +338,42 @@ class ControlCenter:
         from .readiness import readiness
         return readiness(self.root, self.store, self.now)
 
+    def scout_discoveries(self):
+        """Project existing scheduler records; never issue acceptance or create state."""
+        from .scheduler_health import acceptance, successful_execution, timer_invocation
+        with self.db() as db:
+            rows = [dict(kind=r['kind'], created=r['created'], payload=decode(r['payload']))
+                    for r in db.execute("SELECT kind,created,payload FROM dev_events WHERE kind IN ('SCHEDULE','SCHEDULE_FAILURE') ORDER BY seq DESC LIMIT 1001")]
+        if len(rows)>1000:
+            raise ValueError('discovery inventory incomplete')
+        rows = [r for r in rows if timer_invocation(r['payload']) and r['payload'].get('fixture_only') is not True]
+        failed = {timer_invocation(r['payload']) for r in rows if r['kind']=='SCHEDULE_FAILURE'}
+        latest = rows[0]['payload'] if rows else None
+        success = next((r['payload'] for r in rows if successful_execution(r, failed, self.now)), None)
+        items = []
+        if success:
+            ids = success.get('candidates', [])
+            if not isinstance(ids, list) or len(ids)>100 or len(set(ids))!=len(ids):
+                raise ValueError('bounded discovery candidates required')
+            for cid in ids:
+                identifier(cid)
+                matches = self.candidates('limit=1&search='+cid)['items']
+                c = next((c for c in matches if c['id']==cid), None)
+                if c is None:
+                    raise ValueError('discovered candidate unavailable')
+                # A run may also reference deduplicated older proposals.
+                if c['created_at'] is not None and success['started_at']<=c['created_at']<=success['ended_at']:
+                    items.append(c)
+        accepted = acceptance(self.store, self.head, self.now) if self.head else {}
+        def summary(run):
+            return dict(slot=text(run.get('slot'), 80), status=text(run.get('status'), 80),
+                        started_at=stamp(run.get('started_at')), ended_at=stamp(run.get('ended_at')),
+                        candidates_discovered=run.get('created') if type(run.get('created')) is int else None,
+                        head_sha=run['head'] if isinstance(run.get('head'), str) and SHA.fullmatch(run['head']) else None) if run else None
+        return dict(latest_run=summary(latest), latest_successful_run=summary(success), items=items,
+                    acceptance=dict(successful_runs=accepted.get('successful_runs'), required_runs=accepted.get('required_runs'),
+                                    source_head=accepted.get('source_head')))
+
     def overview(self):
         counts = None
         try:
@@ -354,7 +390,11 @@ class ControlCenter:
             state = {}
             ready = self.judgment('UNAVAILABLE', 'SOURCE_UNAVAILABLE', 'Complete current source evidence is unavailable.')
             blockers = [dict(reason='Current admission evidence unavailable.', destination='certification')]
-        return self.envelope(readiness=ready, blockers=blockers, metrics=dict(candidate_backlog=counts, owner_decisions=None,
+        try:
+            scout = self.scout_discoveries()
+        except Exception:
+            scout = dict(latest_run=None, latest_successful_run=None, items=[], acceptance={}, unavailable=True)
+        return self.envelope(scout=scout, readiness=ready, blockers=blockers, metrics=dict(candidate_backlog=counts, owner_decisions=None,
                              validation=self.judgment('UNAVAILABLE', 'NO_AGGREGATE_AUTHORITY', 'Inspect exact-source validation receipts.')),
                              priority_queue=candidates['items'], autonomy_configuration=self.configuration(),
                              scheduler=self.judgment('PASS' if state.get('scheduled_discovery', {}).get('status')=='SCHEDULED' else 'UNAVAILABLE', 'SCHEDULER_OBSERVATION', state.get('scheduled_discovery', {}).get('reason', 'Scheduled discovery observation; qualification remains separate.'), source='scheduler_health.health', observed=state.get('scheduled_discovery', {}).get('created'), ttl=1800, verifier='EXISTING_SCHEDULER_GATE'))
