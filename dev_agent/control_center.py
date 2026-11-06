@@ -369,7 +369,7 @@ class ControlCenter:
             return dict(slot=text(run.get('slot'), 80), status=text(run.get('status'), 80),
                         started_at=stamp(run.get('started_at')), ended_at=stamp(run.get('ended_at')),
                         candidates_discovered=run.get('created') if type(run.get('created')) is int else None,
-                        head_sha=run.get('head')) if run else None
+                        head_sha=run['head'] if isinstance(run.get('head'), str) and SHA.fullmatch(run['head']) else None) if run else None
         return dict(latest_run=summary(latest), latest_successful_run=summary(success), items=items,
                     acceptance=dict(successful_runs=accepted.get('successful_runs'), required_runs=accepted.get('required_runs'),
                                     source_head=accepted.get('source_head')))
