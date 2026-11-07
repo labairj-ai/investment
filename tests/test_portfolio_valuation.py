@@ -133,6 +133,9 @@ def test_dashboard_fixture_uses_shared_nullable_net_and_emits_valid_javascript(t
     assert ('"totalValue": 9100.0' if complete else '"totalValue": null') in page
     assert '"grossStockValue": 10000.0' in page
     assert 'Stocks vs SPY' in page
+    assert 'Tracked Net Value — History' not in page
+    assert 'net-value-history' not in page
+    assert 'netHistoryCanvas' not in page
     scripts = re.findall(r'<script(?![^>]*\bsrc\b)[^>]*>(.*?)</script>', page, re.S | re.I)
     for index, script in enumerate(scripts):
         path = tmp_path / f'fixture-{index}.js'

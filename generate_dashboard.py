@@ -2985,11 +2985,6 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
 
   <!-- Main charts row -->
   <div class="card">
-    <h2>Tracked Net Value — History</h2>
-    <p style="font-size:12px;color:#7f8c8d;">Stocks less open covered-call liabilities. {history_complete}/{len(port_dates)} dates supported by dated records. Reported marks and contract daily closes take priority; saved bid/ask midpoints are estimates and may be intraday. Gaps mean historical quotes are missing. Cash and untracked instruments are excluded. Original stock snapshots are preserved.</p>
-    <div style="height:260px;"><canvas id="net-value-history"></canvas></div>
-  </div>
-  <div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
       <h2 style="margin:0;">Stocks vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted stock history; excludes options and cash, since Feb 11 2026)</span></h2>
       <div id="cum-tf-btns" style="display:flex;gap:4px;">
@@ -3753,16 +3748,6 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
 
 <script>
 const D = {chart_data};
-const netHistoryCanvas = document.getElementById('net-value-history');
-if (netHistoryCanvas) new Chart(netHistoryCanvas, {{
-  type:'line',
-  data:{{labels:D.dates,datasets:[{{label:'Tracked net value · estimate',data:D.historyNetValues,
-       borderColor:'#1a6e87',backgroundColor:'#1a6e8720',spanGaps:false,pointRadius:2,tension:0.1}}]}},
-  options:{{responsive:true,maintainAspectRatio:false,
-    plugins:{{tooltip:{{callbacks:{{afterLabel:ctx=>D.historyCoverage[ctx.dataIndex]}}}}}},
-    scales:{{y:{{ticks:{{callback:v=>'$'+Number(v).toLocaleString('en-US')}}}}}}
-  }}
-}});
 function checkPortfolioValuation() {{
   if (expirePortfolioValuation(D, Date.now())) {{
     renderGoalsCard();
