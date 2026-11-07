@@ -37,6 +37,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     store = configured_store(); root = args.root.resolve()
     data = json.loads(args.input.read_text()) if args.input else {}
+    if args.command in {'worktree','build','pr','autonomous-cycle'}:
+        from .watchdog_gate import require_coverage
+        require_coverage(root)
     if args.command=='resume-autonomy':
         from .owner_review import owner_identity
         from .stage_control import resume

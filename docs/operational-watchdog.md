@@ -136,3 +136,115 @@ Full local regression: 1,376 passed, 16 skipped. Implementation CI run
 [35628293623](https://github.com/labairj-ai/investment/actions/runs/35628293623)
 passed. Live notification attempts were zero because no alertable incident was
 present; error/retry/deduplication paths were tested with fake transport.
+
+
+## Development Discovery (prepared source; not deployed)
+
+TODO0855 adds Development Discovery to this same runner, incident log, delivery
+policy, API and dashboard. It does not add another daemon/alert framework. Source
+preparation was authorized while 0852 runs on pinned main19fd140; merge/deployment
+must wait for its three genuine accepted slots and the separately reviewed
+post-acceptance observer/source transition. Do not use the zero-run pin-refresh
+tool after real history exists, erase history or move old-head credit to new code.
+New-source qualification remains mandatory wherever current admission requires it.
+
+`discovery_watchdog_reader` allows only fixed read-only Git/systemd queries and
+bounded protected file reads. Git optional locks/hooks/ambient configuration are
+disabled. The ledger is inspected as a query-only in-memory SQLite snapshot;
+active journals/WAL or unstable reads fail closed rather than being repaired.
+It never imports a producer adapter or receives a ledger writer, Builder, GitHub
+write, worktree or deployment interface. The classifier is pure data -> checks.
+Only the existing watchdog persists its own projections/incidents/delivery state.
+
+Sources are the actual timer/service metadata, exact clean deployed Git source,
+protected root observer config/manifest and installed executable/unit, active
+observer service and private socket metadata (no socket/API call), private signal
+spool, real discovery
+ledger and protected root per-run bookends. The existing acceptance calculation
+is projected unchanged. A manual/forged/synthetic ledger success cannot clear a
+missing-run incident without its matching root-owned real invocation/slot proof.
+Absence of root evidence before any completed real run is PENDING, not an alarm.
+At0/1/2 runs healthy progression is ACCEPTING; READY requires the authoritative
+three-run result including aggregate host safety. Watchdog health grants no credit.
+
+Scheduling uses timezone-aware America/New_York dates, including DST and genuine
+persistent catch-up. Reviewed delay120s + timer accuracy60s + observer completion
+240s bound the normal completion window; `config/development_watchdog.json` adds
+900s grace before YELLOW and7200s missed-run escalation to RED. Invalid thresholds
+are RED; no existing freshness ceiling can expand. The spool remains valid at most
+36hours, with delayed hourly collection warned after4500s; scheduler observations
+warn after1800s and expire at the existing3600s. Distinct failed collector/observer
+invocations are remembered only in watchdog's own projection for repeated-failure
+classification, never retried by the monitor.
+
+The protected source-pin timestamp plus first real scheduler observation anchor
+current-source scheduling obligations. Historical ledger rows remain untouched;
+pre-transition rows do not masquerade as current-source operational runs. The
+existing acceptance calculation still receives the complete snapshot and filters
+source itself. Cached origin/main is read/reported without fetching: a newer
+cached ref alone does not replace an intentionally pinned deployed source. HEAD,
+its full trusted manifest and observer pin must still match; unreviewed drift RED.
+Existing bounded acceptance inventories remain fail-closed if exhausted; monitoring
+does not prune or expand them. A legitimate transition must preserve/archive old
+root proof through its separately reviewed mechanism, never through watchdog code.
+
+During discovery-only phase all four implementation/publication/merge flags remain
+false, SHADOW/L2/human merge required; unexpected Builder processes, implementation
+state/worktrees or PR/merge/deployment events are immediately RED. A future normal
+reviewed activation source may enable the existing supervised loop only when its
+configuration is committed, clean and bound by the protected observer manifest.
+The component derives that phase from this reviewed configuration, not a request
+flag, model response, new owner ceremony or monitoring exception. Autonomous
+implementation and auto-merge remain forbidden. No controls change in this PR.
+
+0853's actual entry checks, manual CLI worktree/build/publication routes and
+low-level supervised start authorization require fresh complete independent watchdog projections
+for the same source/code identity, genuine watchdog producer InvocationID/MainPID,
+active pinned existing watchdog timer, fresh actual inspection timestamp and
+no unresolved RED (including incident-history consistency), authoritative3/3/host
+safety and the reviewed supervised controls. Failure blocks before worktree/Builder;
+coverage is rechecked before subsequent Builder/publish steps. The consumer reads
+only the fixed production watchdog.db, never a candidate-checkout projection. Dashboard readiness
+uses the same admission. No serialized HEALTHY flag can authorize implementation.
+
+The dashboard shows status/acceptance/source/last-next Scout/signals/host safety and
+observed Builder state, with diagnostic expansion only. No Run/Retry/Repair/Enable/
+Reset control exists. Alerts contain fixed reason codes and typed component/slot/
+source/last-success metadata, never raw ledger/spool/portfolio/credential payloads.
+All existing notification deduplication, YELLOW digest and delivery retries remain.
+
+Live acceptance is still outstanding: after0852 and the reviewed transition, allow
+the existing watchdog timer to perform a genuine independent inspection, verify
+its component projections and dashboard, and prove admission stays blocked until
+all current-source requirements hold. No test fixture is production evidence and
+no synthetic incident or Scout run should be created for rollout verification.
+
+The observer service/source/unit/socket can fail RED before the first scheduled
+Scout, without calling its producer API. A completed ledger row whose actual
+systemd service is still bookending remains pending only inside the reviewed
+240-second window; it cannot clear an overdue incident until root proof exists.
+A later genuine root-bookended success can resolve an earlier failed attempt.
+
+Discovery subchecks retain per-component incidents. The aggregate dashboard row
+does not duplicate an equal/worse child notification; aggregate-only inspection
+failures still alert. Existing delivery keys, retry intervals and YELLOW digest
+behavior are reused unchanged for all pre-existing components.
+
+### October 30 source refresh: deployment remains blocked
+
+Scout is a SYSTEM service/timer at 16:00 America/New_York (120s randomized delay).
+Collector and scheduler observer remain USER units. This observational PR neither
+repairs timer provenance nor starts Scout, changes scheduling, installs its own
+observer, or grants acceptance. A failed Pre with no SCHEDULE remains RED even if
+Unit.ActivationDetails still describes a prior success. Current Job provenance is
+validated by the separately reviewed Scout repair, never inferred by this display.
+
+A protected acceptance_epoch must equal the exact deployed head. Its receipt is
+read only from the corresponding root-owned epochs/<head>/discovery.json; the old
+receipt is historical evidence and never a fallback for new-source credit. Missing
+new receipt means pending qualification; malformed/cross-source selection fails
+closed. A separately authorized transactional source transition must permanently
+archive the old 1/3 evidence and establish the new 0/3 epoch before deployment.
+PR #19 stays separate from that transition, cannot be deployed under a Scout GO,
+and requires its own exact-head owner approval plus later qualification/rollout
+review. TODO 0853 remains blocked; no remediation or implementation authority.
