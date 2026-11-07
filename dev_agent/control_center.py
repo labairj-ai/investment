@@ -215,8 +215,9 @@ class ControlCenter:
                 json_extract(c.payload,'$.category') AS category,
                 json_extract(c.payload,'$.source') AS source FROM dev_candidates c),
                 ranked AS (SELECT *, CASE
-                    WHEN review_status='BOUNDED_FIX_DEPLOYED' OR state IN ('DEPLOYED','CLOSED') THEN 'IMPLEMENTED'
                     WHEN state='REJECTED' THEN 'REJECTED'
+                    WHEN state='ROLLED_BACK' THEN 'REVIEWED'
+                    WHEN review_status='BOUNDED_FIX_DEPLOYED' OR state IN ('DEPLOYED','CLOSED') THEN 'IMPLEMENTED'
                     WHEN state='DEFERRED' THEN 'DEFERRED'
                     WHEN state IN ('BUILDING','PR_OPEN') OR review_status='IN_PROGRESS' THEN 'IMPLEMENTING'
                     WHEN state='APPROVED' THEN 'APPROVED'
@@ -256,7 +257,7 @@ class ControlCenter:
                     evidence=self.judgment('UNAVAILABLE', 'CLAIM_ONLY', 'Candidate content is a proposal, not independent verification.', observed=row['updated'], verifier='UNVERIFIED'))
 
     def candidate_outcome(self, db, cid, seq):
-        rows = db.execute("SELECT kind,created,payload FROM dev_events WHERE candidate=? AND seq<=? AND kind IN ('ITERATION','STATE','PLAN','DEPLOYMENT') ORDER BY seq DESC LIMIT 1001", (cid, seq)).fetchall()
+        rows = db.execute("SELECT kind,created,payload FROM dev_events WHERE candidate=? AND seq<=? AND kind IN ('ITERATION','STATE','PLAN','DEPLOYMENT','PR') ORDER BY seq DESC LIMIT 1001", (cid, seq)).fetchall()
         if len(rows)>1000:
             raise ValueError('candidate outcome inventory incomplete')
         events = [(r['kind'], r['created'], decode(r['payload'])) for r in rows]
@@ -264,6 +265,16 @@ class ControlCenter:
         delivered = next(((t,p) for k,t,p in events if k=='ITERATION' and p.get('status')=='BOUNDED_FIX_DEPLOYED'), (None, {}))
         t, p = review
         done, implementation = delivered
+        deployment = next(((t,p) for k,t,p in events if k=='DEPLOYMENT'), None)
+        verification = 'RECORDED_DEPLOYED' if implementation else 'NOT_RECORDED'
+        if deployment and (done is None or deployment[0]>=done):
+            done, deployed = deployment
+            pr = deployed.get('pr') if isinstance(deployed.get('pr'), dict) else {}
+            plan = next((p for k,t,p in events if k=='PLAN'), {})
+            implementation = dict(outcome=plan.get('outcome'), scope=plan.get('scope'),
+                                  number=pr.get('number'), url=pr.get('url'),
+                                  merge_sha=deployed.get('deployed_sha'))
+            verification = 'RECORDED_' + str(deployed.get('status', 'UNAVAILABLE'))
         state = next((p for k,t,p in events if k=='STATE'), {})
         context = state.get('context', {})
         related = context.get('duplicate_of') if isinstance(context, dict) else None
@@ -283,10 +294,10 @@ class ControlCenter:
         return dict(review_status=text(p.get('status'), 80), review_date=stamp(t),
                     disposition_reason=safe_detail(p.get('reasons', [])),
                     related_candidate=text(related, 128), partial_improvement_implemented=bool(implementation),
-                    implementation=dict(summary=text(implementation.get('scope', implementation.get('outcome'))),
+                    implementation=dict(summary=text(implementation.get('scope') or implementation.get('outcome')),
                         todo=text(todo), pr=implementation.get('number'), url=text(implementation.get('url')),
                         deployed_sha=implementation.get('merge_sha') if SHA.fullmatch(str(implementation.get('merge_sha', ''))) else None,
-                        verification_status='RECORDED_DEPLOYED' if implementation else 'NOT_RECORDED',
+                        verification_status=verification,
                         verification_note='Historical deployment recorded in ledger; not a current host-health assertion.',
                         completion_date=stamp(done)) if implementation else None)
 

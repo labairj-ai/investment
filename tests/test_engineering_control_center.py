@@ -608,3 +608,16 @@ def test_disposition_projection_uses_existing_events(center, store, state, revie
         store.event(cid, 'ITERATION', dict(status=review))
     item = center.candidates('disposition='+expected)['items'][0]
     assert item['workflow_state'] == state and item['disposition'] == expected
+
+
+def test_standard_deployment_event_exposes_recorded_health_and_sha(center, store):
+    cid = candidate(store)
+    with store.connect(True) as db:
+        store._append(db, cid, 'STATE', dict(state='DEPLOYED'), 'fixture-deployed')
+    store.event(cid, 'DEPLOYMENT', dict(status='HEALTHY', deployed_sha='a'*40,
+        pr=dict(number=12, url='https://github.com/labairj-ai/investment/pull/12')))
+    item = center.candidates()['items'][0]
+    assert item['disposition'] == 'IMPLEMENTED'
+    assert item['implementation']['verification_status'] == 'RECORDED_HEALTHY'
+    assert item['implementation']['deployed_sha'] == 'a'*40
+    assert item['implementation']['pr'] == 12
