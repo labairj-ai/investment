@@ -3,6 +3,8 @@ import json
 import sys
 import time
 import uuid
+from datetime import date, datetime, time as day_time, timedelta
+from time_utils import today_eastern, TZ_EASTERN
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +27,7 @@ def _seed_episodes(conn, n: int, with_outcomes: bool = True, noise: float = 0.1,
                    horizon_definition_version=None):
     """Seed n episodes with synthetic feature data and 3m alpha outcomes."""
     rng = np.random.default_rng(42)
-    base_time = time.time() - (400 * 86400)  # 400 days ago
+    base_day = today_eastern() - timedelta(days=400)
     eps = []
     for i in range(n):
         ep_id = str(uuid.uuid4())
@@ -37,7 +39,9 @@ def _seed_episodes(conn, n: int, with_outcomes: bool = True, noise: float = 0.1,
         comp = int(round(0.30*q + 0.25*v + 0.20*pf + 0.15*c + 0.10*ec))
         # Synthetic alpha: positively correlated with quality and valuation
         alpha = 0.001 * q + 0.001 * v - 0.04 + float(rng.normal(0, noise))
-        captured_at = base_time + i * 86400  # one per day
+        # One distinct Eastern calendar date per episode, including DST changes.
+        captured_at = datetime.combine(base_day + timedelta(days=i), day_time(12),
+                                       TZ_EASTERN).timestamp()
         conn.execute(
             """INSERT INTO decision_episodes
                (episode_id, run_id, ticker, captured_at, selected, composite_score,
@@ -10100,3 +10104,17 @@ class TestComparisonScoreContract0453:
         after = oa._composite_6(80, 70, 60, 50, 40, 30)
         assert baseline == after, \
             "Changing COMPOSITE_WEIGHTS must not affect _composite_6() (0453)"
+
+
+@pytest.mark.parametrize("today", [date(2026, 11, 6), date(2026, 4, 1)])
+def test_seed_episodes_has_distinct_eastern_calendar_dates_across_dst(mem_db, monkeypatch, today):
+    monkeypatch.setattr(sys.modules[__name__], "today_eastern", lambda: today)
+    conn = _make_conn(mem_db)
+    try:
+        _seed_episodes(conn, 50)
+        dates = [datetime.fromtimestamp(r[0], TZ_EASTERN).date() for r in
+                 conn.execute("SELECT captured_at FROM decision_episodes ORDER BY captured_at")]
+        assert dates == [today - timedelta(days=400) + timedelta(days=i) for i in range(50)]
+        assert len(set(dates)) == 50
+    finally:
+        conn.close()

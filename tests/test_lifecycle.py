@@ -9,7 +9,8 @@ All 8+ scenarios use the in-memory DB with real migrate() and real agent_db help
 import json
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, time as day_time, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from time_utils import today_eastern
 from unittest.mock import patch
@@ -22,8 +23,14 @@ sys.path.insert(0, str(ROOT))
 
 # ── Seed helpers ───────────────────────────────────────────────────────────────
 
+def _days_ago(n: int) -> float:
+    # Match seeded calendar dates across DST; elapsed 24h days can land tomorrow.
+    return datetime.combine(today_eastern() - timedelta(days=n), day_time(12),
+                            ZoneInfo("America/New_York")).timestamp()
+
+
 def _seed_rec(conn, ticker="ANET", action="HOLD", created_at=None, status="open", payload=None):
-    ts = created_at or (time.time() - 100 * 86400)  # 100 days ago by default
+    ts = created_at or _days_ago(100)  # 100 calendar days ago by default
     conn.execute(
         """INSERT INTO recommendations
            (ticker, action, recommendation_score, confidence, priority, status, created_at, action_payload_json)
@@ -296,7 +303,7 @@ def test_full_lifecycle_hold_rec_to_outcome(mem_db):
     conn = _open_conn(mem_db)
 
     # 100 days ago entry date
-    entry_ts = time.time() - 100 * 86400
+    entry_ts = _days_ago(100)
     entry_date = (today_eastern() - timedelta(days=100)).isoformat()
     h_date_1m = (today_eastern() - timedelta(days=70)).isoformat()  # 1-month horizon = 30d after entry
 
@@ -901,7 +908,7 @@ def test_sell_cc_assigned_lifecycle_locks_at_assignment_return(mem_db):
     expiry_date  = (today_eastern() - timedelta(days=140)).isoformat()
     post30_date  = (today_eastern() - timedelta(days=110)).isoformat()
     exec_date    = (today_eastern() - timedelta(days=199)).isoformat()
-    entry_ts     = time.time() - 200 * 86400
+    entry_ts     = _days_ago(200)
 
     rec_id = _seed_rec(conn, ticker="ANET", action="SELL_CC", created_at=entry_ts, status="accepted",
                        payload={"expiration": expiry_date, "strike": strike, "premium": premium})
@@ -963,7 +970,7 @@ def test_sell_cc_expired_lifecycle_uses_uncapped_formula(mem_db):
     expiry_date  = (today_eastern() - timedelta(days=140)).isoformat()
     post30_date  = (today_eastern() - timedelta(days=110)).isoformat()
     exec_date    = (today_eastern() - timedelta(days=199)).isoformat()
-    entry_ts     = time.time() - 200 * 86400
+    entry_ts     = _days_ago(200)
 
     rec_id = _seed_rec(conn, ticker="JOBY", action="SELL_CC", created_at=entry_ts, status="accepted",
                        payload={"expiration": expiry_date, "strike": strike, "premium": premium})
@@ -1100,7 +1107,7 @@ def test_trim_two_fills_lifecycle_uses_vwap(mem_db):
     vwap = (f1_price * f1_qty + f2_price * f2_qty) / (f1_qty + f2_qty)
     f_total = (f1_qty + f2_qty) / pos_shares  # 0.50
 
-    entry_ts = time.time() - 100 * 86400
+    entry_ts = _days_ago(100)
     entry_date = (today_eastern() - timedelta(days=100)).isoformat()
     h1m_date = (today_eastern() - timedelta(days=70)).isoformat()
     exec_date = (today_eastern() - timedelta(days=99)).isoformat()
@@ -1271,7 +1278,7 @@ def test_btc_management_rec_evaluated_at_maturity(mem_db):
     entry_price = 180.0
     btc_mark = 2.5
     horizon_price = 190.0
-    entry_ts = time.time() - 100 * 86400
+    entry_ts = _days_ago(100)
     entry_date = (today_eastern() - timedelta(days=100)).isoformat()
     h1m_date = (today_eastern() - timedelta(days=70)).isoformat()
 
@@ -1315,3 +1322,11 @@ def test_btc_management_rec_evaluated_at_maturity(mem_db):
         f"BUY_TO_CLOSE agent_r should equal hold_r_nav={hold_r_nav:.4f}, "
         f"got {row['recommended_path_return']:.4f}"
     )
+
+
+@pytest.mark.parametrize("today", [date(2026, 11, 6), date(2026, 3, 9)])
+@pytest.mark.parametrize("days", [10, 100, 200])
+def test_calendar_fixture_timestamp_matches_eastern_price_date(monkeypatch, today, days):
+    monkeypatch.setattr(sys.modules[__name__], "today_eastern", lambda: today)
+    timestamp = _days_ago(days)
+    assert datetime.fromtimestamp(timestamp, ZoneInfo("America/New_York")).date() == today - timedelta(days=days)

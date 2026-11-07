@@ -1,7 +1,8 @@
 """Tests for agents/learning/outcome_labeler.py (0328)."""
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, time as day_time, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from time_utils import today_eastern
 from unittest.mock import patch
@@ -13,7 +14,9 @@ sys.path.insert(0, str(ROOT))
 
 
 def _days_ago(n: int) -> float:
-    return time.time() - n * 86400
+    # Match seeded calendar dates across DST; elapsed 24h days can land tomorrow.
+    return datetime.combine(today_eastern() - timedelta(days=n), day_time(12),
+                            ZoneInfo("America/New_York")).timestamp()
 
 
 def _date_n_days_ago(n: int) -> str:
@@ -809,3 +812,11 @@ class TestExecutionCostAccounting0339:
         row = conn.execute("SELECT * FROM trade_outcomes WHERE fill_id=?", (fill_id,)).fetchone()
         conn.close()
         assert row["implementation_shortfall"] is None
+
+
+@pytest.mark.parametrize("today", [date(2026, 11, 6), date(2026, 3, 9)])
+@pytest.mark.parametrize("days", [10, 100, 200])
+def test_calendar_fixture_timestamp_matches_eastern_price_date(monkeypatch, today, days):
+    monkeypatch.setattr(sys.modules[__name__], "today_eastern", lambda: today)
+    timestamp = _days_ago(days)
+    assert datetime.fromtimestamp(timestamp, ZoneInfo("America/New_York")).date() == today - timedelta(days=days)

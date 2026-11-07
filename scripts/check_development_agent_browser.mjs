@@ -79,6 +79,8 @@ try{
   assert(await evaluate('document.getElementById("content").textContent.includes("Latest Scout Run") && document.getElementById("content").textContent.includes("Acceptance: 1/3")'),'latest Scout summary missing');
   assert(await evaluate('[...document.querySelectorAll(".panel")].find(p=>p.textContent.includes("New Discoveries"))?.querySelector(".candidate button")?.textContent.includes("Inspect")'),'new discovery inspect card missing');
   assert(await evaluate('document.getElementById("content").textContent.includes("GitHub PR #53") && document.getElementById("content").textContent.includes("Workflow: DEFERRED") && document.getElementById("content").textContent.includes("Currently being implemented")'),'outcome summary missing');
+  assert(await evaluate('["IMPLEMENTED","DEFERRED","REJECTED","IMPLEMENTING","AWAITING_REVIEW","REVIEWED","APPROVED"].every(s=>badge(s).className.includes("outcome-"))'),'candidate disposition badge color class missing');
+  assert(await evaluate('document.querySelector(".candidate .badge.outcome-implemented") !== null'),'implemented badge not rendered');
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'overview overflow '+width);
   const contrast=await evaluate(`(${contrastCheck.toString()})()`);assert(contrast.failures.length===0,'text contrast below AA: '+JSON.stringify(contrast.failures));
   const viewContrasts=[{view:'overview',...contrast}];const checkViewContrast=async view=>{const c=await evaluate(`(${contrastCheck.toString()})()`);assert(c.failures.length===0,'text contrast '+view+': '+JSON.stringify(c.failures));viewContrasts.push({view,...c});};

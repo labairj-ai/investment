@@ -6,3 +6,11 @@
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
 
 .candidate-top>.badge{flex-shrink:0;white-space:nowrap}
+
+/* Candidate dispositions; independent of workflow gates and risk badges. */
+.badge.outcome-implemented{color:#1b654d;background:var(--green-bg);border-color:#95baa4}
+.badge.outcome-deferred{color:var(--amber);background:var(--amber-bg);border-color:#d6b676}
+.badge.outcome-rejected{color:var(--red);background:var(--red-bg);border-color:#d59c9e}
+.badge.outcome-implementing{color:#205e8f;background:#e9f2fb;border-color:#9fc3e5}
+.badge.outcome-pending{color:#425b68;background:#edf2f5;border-color:#b7c6cf}
+.badge.outcome-reviewed{color:#225c60;background:#e8f3f3;border-color:#a0c5c6}
