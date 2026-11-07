@@ -186,12 +186,14 @@ class ControlCenter:
         return dict(dict(version=VERSION, repository=REPOSITORY, head_sha=self.head, source_clean=self.source_clean, read_at=self.now), **values)
 
     def candidates(self, query=''):
-        q, limit = self.options(query, {'search', 'state', 'risk', 'category', 'source', 'sort', 'active'})
+        q, limit = self.options(query, {'search', 'state', 'risk', 'category', 'source', 'sort', 'active', 'disposition'})
         if 'active' in q and q['active'] not in {'true', 'false'}:
             raise ValueError('invalid active filter')
         for field, allowed in [('state', STATES), ('risk', {f'L{i}' for i in range(6)} | {'UNKNOWN'}), ('category', CATEGORIES), ('source', SOURCES)]:
             if field in q and q[field] not in allowed:
                 raise ValueError('unknown filter')
+        if 'disposition' in q and q['disposition'] not in {'AWAITING_REVIEW','REVIEWED','APPROVED','IMPLEMENTING','IMPLEMENTED','DEFERRED','REJECTED'}:
+            raise ValueError('unknown disposition')
         sort = q.get('sort', 'newest')
         if sort not in {'newest', 'oldest', 'risk', 'value'} or len(q.get('search', '')) > 120:
             raise ValueError('invalid sort/search')
@@ -203,7 +205,8 @@ class ControlCenter:
                 return f"(SELECT json_extract(e.payload,'{path}') FROM dev_events e WHERE e.candidate=c.id AND e.kind='{kind}' AND e.seq<=? ORDER BY e.seq DESC LIMIT 1)"
             cte = f"""WITH rows AS (SELECT c.id,c.created,c.payload,
                 {event('STATE', '$.state')} AS state,
-                coalesce({event('PLAN', '$.context.risk')},'UNKNOWN') AS risk,
+                coalesce({event('PLAN', '$.context.risk')},{event('SCORE', '$.risk.risk')},'UNKNOWN') AS risk,
+                {event('ITERATION', '$.status')} AS review_status,
                 {event('SCORE', '$.score')} AS value,
                 {event('SCORE', '$.version')} AS score_version,
                 {event('SCORE', '$.confidence')} AS evidence_quality,
@@ -211,12 +214,20 @@ class ControlCenter:
                 json_extract(c.payload,'$.title') AS title,
                 json_extract(c.payload,'$.category') AS category,
                 json_extract(c.payload,'$.source') AS source FROM dev_candidates c),
-                ranked AS (SELECT *, CASE WHEN risk GLOB 'L[0-5]' THEN cast(substr(risk,2) AS INTEGER) ELSE -1 END AS risk_order,
+                ranked AS (SELECT *, CASE
+                    WHEN state='REJECTED' THEN 'REJECTED'
+                    WHEN state='ROLLED_BACK' THEN 'REVIEWED'
+                    WHEN review_status='BOUNDED_FIX_DEPLOYED' OR state IN ('DEPLOYED','CLOSED') THEN 'IMPLEMENTED'
+                    WHEN state='DEFERRED' THEN 'DEFERRED'
+                    WHEN state IN ('BUILDING','PR_OPEN') OR review_status='IN_PROGRESS' THEN 'IMPLEMENTING'
+                    WHEN state='APPROVED' THEN 'APPROVED'
+                    WHEN review_status IS NOT NULL OR state IN ('PLANNED','NEEDS_HUMAN','ROLLED_BACK') THEN 'REVIEWED'
+                    ELSE 'AWAITING_REVIEW' END AS disposition, CASE WHEN risk GLOB 'L[0-5]' THEN cast(substr(risk,2) AS INTEGER) ELSE -1 END AS risk_order,
                     CASE WHEN typeof(value) IN ('real','integer') THEN value ELSE -1 END AS value_order FROM rows WHERE state IS NOT NULL) """
-            conditions = ['1=1']; args = [seq]*6
+            conditions = ['1=1']; args = [seq]*8
             if q.get('active')=='true':
                 conditions.append("state NOT IN ('CLOSED','REJECTED','ROLLED_BACK')")
-            for field in ('state', 'risk', 'category', 'source'):
+            for field in ('state', 'risk', 'category', 'source', 'disposition'):
                 if field in q:
                     conditions.append(field+'=?'); args.append(q[field])
             if q.get('search'):
@@ -229,7 +240,7 @@ class ControlCenter:
                     raise ValueError('invalid candidate cursor')
                 identifier(key[2]); conditions.append(f'({order},created,id)>(?,?,?)'); args.extend(key)
             rows = db.execute(cte+f'SELECT *,{order} AS ordering FROM ranked WHERE '+' AND '.join(conditions)+' ORDER BY ordering,created,id LIMIT ?', [*args, limit+1]).fetchall()
-            items = [self.candidate_row(row) for row in rows[:limit]]
+            items = [dict(self.candidate_row(row), **self.candidate_outcome(db, row['id'], seq)) for row in rows[:limit]]
             next_page = self.next_cursor(seq, [rows[limit-1]['ordering'], rows[limit-1]['created'], rows[limit-1]['id']], binding) if len(rows)>limit else None
         return self.envelope(items=items, total=total, next_cursor=next_page, snapshot_seq=seq)
 
@@ -238,12 +249,57 @@ class ControlCenter:
         if row['state'] not in STATES or row['category'] not in CATEGORIES or row['source'] not in SOURCES or row['risk'] not in {f'L{i}' for i in range(6)} | {'UNKNOWN'}:
             raise ValueError('unknown candidate schema')
         value = row['value'] if type(row['value']) in (int, float) and math.isfinite(row['value']) else None
-        return dict(id=row['id'], title=text(p.get('title')), created_at=stamp(row['created']), updated_at=stamp(row['updated']), state=row['state'], risk=row['risk'],
+        return dict(id=row['id'], title=text(p.get('title')), created_at=stamp(row['created']), updated_at=stamp(row['updated']), state=row['state'], workflow_state=row['state'], disposition=row['disposition'], risk=row['risk'],
                     category=row['category'], source=row['source'], value_score=value, score_version=text(row['score_version'], 80) if value is not None else None,
                     evidence_quality=text(row['evidence_quality'], 80),
                     component=text(p.get('component')), files=safe_detail(p.get('files', [])),
                     blocker='Review financial, execution and governance consequences.' if row['risk'] in {'L4', 'L5'} else 'Inspect frozen scope and current evidence before any action.',
                     evidence=self.judgment('UNAVAILABLE', 'CLAIM_ONLY', 'Candidate content is a proposal, not independent verification.', observed=row['updated'], verifier='UNVERIFIED'))
+
+    def candidate_outcome(self, db, cid, seq):
+        rows = db.execute("SELECT kind,created,payload FROM dev_events WHERE candidate=? AND seq<=? AND kind IN ('ITERATION','STATE','PLAN','DEPLOYMENT','PR') ORDER BY seq DESC LIMIT 1001", (cid, seq)).fetchall()
+        if len(rows)>1000:
+            raise ValueError('candidate outcome inventory incomplete')
+        events = [(r['kind'], r['created'], decode(r['payload'])) for r in rows]
+        review = next(((t,p) for k,t,p in events if k=='ITERATION'), (None, {}))
+        delivered = next(((t,p) for k,t,p in events if k=='ITERATION' and p.get('status')=='BOUNDED_FIX_DEPLOYED'), (None, {}))
+        t, p = review
+        done, implementation = delivered
+        deployment = next(((t,p) for k,t,p in events if k=='DEPLOYMENT'), None)
+        verification = 'RECORDED_DEPLOYED' if implementation else 'NOT_RECORDED'
+        if deployment and (done is None or deployment[0]>=done):
+            done, deployed = deployment
+            pr = deployed.get('pr') if isinstance(deployed.get('pr'), dict) else {}
+            plan = next((p for k,t,p in events if k=='PLAN'), {})
+            implementation = dict(outcome=plan.get('outcome'), scope=plan.get('scope'),
+                                  number=pr.get('number'), url=pr.get('url'),
+                                  merge_sha=deployed.get('deployed_sha'))
+            verification = 'RECORDED_' + str(deployed.get('status', 'UNAVAILABLE'))
+        state = next((p for k,t,p in events if k=='STATE'), {})
+        context = state.get('context', {})
+        related = context.get('duplicate_of') if isinstance(context, dict) else None
+        todo = None
+        for _, _, payload in events:
+            ctx = payload.get('context')
+            todo = payload.get('todo') or (ctx.get('todo') if isinstance(ctx, dict) else None)
+            if todo:
+                break
+        if todo is None:
+            from .discovery import git
+            try:
+                matches = git(self.root, 'grep', '-l', '-F', cid, self.head, '--', '.todos').splitlines()
+                todo = ', '.join(m.split(':', 1)[1] for m in matches[:10]) or None
+            except Exception:
+                pass
+        return dict(review_status=text(p.get('status'), 80), review_date=stamp(t),
+                    disposition_reason=safe_detail(p.get('reasons', [])),
+                    related_candidate=text(related, 128), partial_improvement_implemented=bool(implementation),
+                    implementation=dict(summary=text(implementation.get('scope') or implementation.get('outcome')),
+                        todo=text(todo), pr=implementation.get('number'), url=text(implementation.get('url')),
+                        deployed_sha=implementation.get('merge_sha') if SHA.fullmatch(str(implementation.get('merge_sha', ''))) else None,
+                        verification_status=verification,
+                        verification_note='Historical deployment recorded in ledger; not a current host-health assertion.',
+                        completion_date=stamp(done)) if implementation else None)
 
     def candidate(self, cid, query=''):
         identifier(cid)
@@ -261,7 +317,9 @@ class ControlCenter:
                 row = db.execute('SELECT payload FROM dev_events WHERE candidate=? AND kind=? ORDER BY seq DESC LIMIT 1', (cid, kind)).fetchone()
                 if row is not None:
                     latest[kind] = safe_detail(decode(row['payload']))
-        return self.envelope(id=cid, title=text(p.get('title')), proposal=safe_detail(p), latest=latest,
+        listing = self.candidates('limit=1&search='+cid)['items']
+        outcome = next((c for c in listing if c['id']==cid), {})
+        return self.envelope(**{k:v for k,v in outcome.items() if k not in {'id','title'}}, id=cid, title=text(p.get('title')), proposal=safe_detail(p), latest=latest,
                              timeline=[self.event_row(e) for e in reversed(events[:100])], timeline_complete=len(events)<=100,
                              timeline_query='candidate='+cid,
                              actions=dict(build=False, approve=False, reason='Read-only inspection; existing authenticated workflow retains all authority.'))
@@ -370,15 +428,28 @@ class ControlCenter:
                         started_at=stamp(run.get('started_at')), ended_at=stamp(run.get('ended_at')),
                         candidates_discovered=run.get('created') if type(run.get('created')) is int else None,
                         head_sha=run['head'] if isinstance(run.get('head'), str) and SHA.fullmatch(run['head']) else None) if run else None
-        return dict(latest_run=summary(latest), latest_successful_run=summary(success), items=items,
+        from .scheduler_health import health
+        scheduler = health(self.store, self.now)
+        with self.db() as db:
+            observation = db.execute("SELECT created,payload FROM dev_events WHERE kind='SCHEDULER_OBSERVATION' ORDER BY seq DESC LIMIT 1").fetchone()
+        timer = decode(observation['payload']) if observation else {}
+        return dict(timer_observation=dict(status=text(timer.get('status'), 80), observed_at=stamp(observation['created']) if observation else None, active=text(timer.get('active'), 80), enabled=timer.get('enabled') is True), scheduler_evidence=dict(status=scheduler.get('status'), reason=text(scheduler.get('reason')), inventory_complete=scheduler.get('inventory_complete') is True), latest_run=summary(latest), latest_successful_run=summary(success), items=items,
                     acceptance=dict(successful_runs=accepted.get('successful_runs'), required_runs=accepted.get('required_runs'),
                                     source_head=accepted.get('source_head')))
 
     def overview(self):
         counts = None
+        total_candidates = None
+        outcome_counts = None
+        candidates = dict(items=[])
         try:
+            total_candidates = self.candidates('limit=1')['total']
+            outcome_counts = {name: self.candidates('limit=1&disposition='+name)['total'] for name in ('AWAITING_REVIEW','IMPLEMENTED','DEFERRED','REJECTED','IMPLEMENTING')}
             candidates = self.candidates('limit=5&sort=risk&active=true')
             counts = candidates['total']
+        except Exception:
+            pass
+        try:
             state = self.projections()
             owner = state.get('owner', {})
             ready = self.judgment(owner.get('status'), 'SUPERVISED_ADMISSION', owner.get('reason', 'Admission unavailable.'), source='readiness.owner_status', observed=self.now, ttl=60, verifier='EXISTING_ADMISSION_GATE')
@@ -386,7 +457,6 @@ class ControlCenter:
             reasons = list(dict.fromkeys([owner.get('reason')]+state.get('blockers', [])))
             blockers = [dict(reason=text(s), destination='certification') for s in reasons if isinstance(s, str)][:3]
         except Exception:
-            candidates = dict(items=[])
             state = {}
             ready = self.judgment('UNAVAILABLE', 'SOURCE_UNAVAILABLE', 'Complete current source evidence is unavailable.')
             blockers = [dict(reason='Current admission evidence unavailable.', destination='certification')]
@@ -394,7 +464,7 @@ class ControlCenter:
             scout = self.scout_discoveries()
         except Exception:
             scout = dict(latest_run=None, latest_successful_run=None, items=[], acceptance={}, unavailable=True)
-        return self.envelope(scout=scout, readiness=ready, blockers=blockers, metrics=dict(candidate_backlog=counts, owner_decisions=None,
+        return self.envelope(scout=scout, readiness=ready, blockers=blockers, metrics=dict(candidate_backlog=counts, outcome_counts=outcome_counts, total_candidates=total_candidates, owner_decisions=None,
                              validation=self.judgment('UNAVAILABLE', 'NO_AGGREGATE_AUTHORITY', 'Inspect exact-source validation receipts.')),
                              priority_queue=candidates['items'], autonomy_configuration=self.configuration(),
                              scheduler=self.judgment('PASS' if state.get('scheduled_discovery', {}).get('status')=='SCHEDULED' else 'UNAVAILABLE', 'SCHEDULER_OBSERVATION', state.get('scheduled_discovery', {}).get('reason', 'Scheduled discovery observation; qualification remains separate.'), source='scheduler_health.health', observed=state.get('scheduled_discovery', {}).get('created'), ttl=1800, verifier='EXISTING_SCHEDULER_GATE'))

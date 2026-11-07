@@ -534,3 +534,90 @@ def test_overview_scout_discovery_sections_reuse_candidate_cards():
     for label in ('Latest Scout Run', 'New Discoveries', 'Priority queue', 'Acceptance:'):
         assert label in source
     assert 'for(const c of scout.items||[])fresh.append(card(c))' in source
+
+
+def test_recorded_outcome_separate_from_workflow_and_score_risk(center, store):
+    cid = candidate(store)
+    store.event(cid, 'SCORE', dict(score=7, version='fixture', risk=dict(risk='L5')))
+    store.transition(cid, 'DEFERRED', dict(reason='Broader work deferred'))
+    store.event(cid, 'ITERATION', dict(status='BOUNDED_FIX_DEPLOYED', number=53,
+        url='https://github.com/labairj-ai/investment/pull/53', merge_sha='d'*40,
+        outcome='Bounded fix deployed; broader work deferred.', reasons=['Defer broader work'], todo='0869'))
+    before = fingerprint(store)
+    item = center.candidates('disposition=IMPLEMENTED')['items'][0]
+    assert item['state'] == item['workflow_state'] == 'DEFERRED'
+    assert item['disposition'] == 'IMPLEMENTED' and item['risk'] == 'L5'
+    assert item['implementation']['pr'] == 53
+    assert item['implementation']['deployed_sha'] == 'd'*40
+    assert item['implementation']['todo'] == '0869'
+    assert item['implementation']['verification_status'] == 'RECORDED_DEPLOYED'
+    assert center.candidate(cid)['implementation'] == item['implementation']
+    assert center.candidates('disposition=DEFERRED')['total'] == 0
+    assert fingerprint(store) == before
+
+
+def test_deferred_remainder_retains_earlier_delivery_and_duplicate_reference(center, store):
+    cid = candidate(store)
+    store.event(cid, 'ITERATION', dict(status='BOUNDED_FIX_DEPLOYED', number=45, merge_sha='e'*40))
+    store.transition(cid, 'DEFERRED', dict(duplicate_of='related-candidate'))
+    store.event(cid, 'ITERATION', dict(status='DEFERRED_REMAINDER', number=53, reasons=['Remaining scope unproven']))
+    item = center.candidates('disposition=DEFERRED')['items'][0]
+    assert item['partial_improvement_implemented'] is True
+    assert item['implementation']['pr'] == 45
+    assert item['related_candidate'] == 'related-candidate'
+    assert item['disposition_reason'] == ['Remaining scope unproven']
+    store.transition(cid, 'REJECTED', dict(duplicate_of='canonical'))
+    store.event(cid, 'ITERATION', dict(status='REJECTED_DUPLICATE', reasons=['Duplicate']))
+    assert center.candidates('disposition=REJECTED')['items'][0]['related_candidate'] == 'canonical'
+
+
+def test_overview_counts_survive_unavailable_admission(center, store, monkeypatch):
+    candidate(store)
+    monkeypatch.setattr(center, 'projections', lambda: (_ for _ in ()).throw(ValueError('incomplete')))
+    d = center.overview()
+    assert d['metrics']['total_candidates'] == 1
+    assert d['metrics']['outcome_counts']['AWAITING_REVIEW'] == 1
+    assert len(d['priority_queue']) == 1
+    assert d['readiness']['status'] == 'UNAVAILABLE'
+
+
+def test_scout_timer_observation_does_not_bypass_inventory_limit(center, store):
+    with store.connect(True) as db:
+        for i in range(1001):
+            store._append(db, None, 'SCHEDULER_OBSERVATION', dict(status='SCHEDULED', active='active', enabled=True), 'obs-'+str(i))
+    scout = center.scout_discoveries()
+    assert scout['timer_observation']['status'] == 'SCHEDULED'
+    assert scout['scheduler_evidence']['status'] == 'UNAVAILABLE'
+    assert scout['scheduler_evidence']['reason'] == 'scheduler evidence inventory incomplete'
+    assert scout['scheduler_evidence']['inventory_complete'] is False
+    assert scout['acceptance']['successful_runs'] == 0
+
+
+@pytest.mark.parametrize('state,review,expected', [
+    ('DISCOVERED',None,'AWAITING_REVIEW'), ('PLANNED',None,'REVIEWED'),
+    ('APPROVED',None,'APPROVED'), ('BUILDING',None,'IMPLEMENTING'),
+    ('PR_OPEN',None,'IMPLEMENTING'), ('DEPLOYED',None,'IMPLEMENTED'),
+    ('DEFERRED','DEFERRED_UNPROVEN_BROAD_REFACTOR','DEFERRED'),
+    ('REJECTED','REJECTED_OBSOLETE','REJECTED')])
+def test_disposition_projection_uses_existing_events(center, store, state, review, expected):
+    cid = candidate(store)
+    # Fixture ledger history, independent of transition admission/authority.
+    with store.connect(True) as db:
+        store._append(db, cid, 'STATE', dict(state=state), 'fixture-state')
+    if review:
+        store.event(cid, 'ITERATION', dict(status=review))
+    item = center.candidates('disposition='+expected)['items'][0]
+    assert item['workflow_state'] == state and item['disposition'] == expected
+
+
+def test_standard_deployment_event_exposes_recorded_health_and_sha(center, store):
+    cid = candidate(store)
+    with store.connect(True) as db:
+        store._append(db, cid, 'STATE', dict(state='DEPLOYED'), 'fixture-deployed')
+    store.event(cid, 'DEPLOYMENT', dict(status='HEALTHY', deployed_sha='a'*40,
+        pr=dict(number=12, url='https://github.com/labairj-ai/investment/pull/12')))
+    item = center.candidates()['items'][0]
+    assert item['disposition'] == 'IMPLEMENTED'
+    assert item['implementation']['verification_status'] == 'RECORDED_HEALTHY'
+    assert item['implementation']['deployed_sha'] == 'a'*40
+    assert item['implementation']['pr'] == 12
