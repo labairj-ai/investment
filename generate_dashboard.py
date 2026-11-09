@@ -106,18 +106,20 @@ def pct(x):
 
 def load_data():
     conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    try:
+        conn.row_factory = sqlite3.Row
 
-    portfolio = [dict(r) for r in conn.execute(
-        "SELECT * FROM portfolio_day ORDER BY day"
-    )]
-    layers = [dict(r) for r in conn.execute(
-        "SELECT * FROM layer_day ORDER BY day, layer"
-    )]
-    holdings = [dict(r) for r in conn.execute(
-        "SELECT * FROM holding_day ORDER BY day, layer, ticker"
-    )]
-    conn.close()
+        portfolio = [dict(r) for r in conn.execute(
+            "SELECT * FROM portfolio_day ORDER BY day"
+        )]
+        layers = [dict(r) for r in conn.execute(
+            "SELECT * FROM layer_day ORDER BY day, layer"
+        )]
+        holdings = [dict(r) for r in conn.execute(
+            "SELECT * FROM holding_day ORDER BY day, layer, ticker"
+        )]
+    finally:
+        conn.close()
     return portfolio, layers, holdings
 
 
@@ -203,9 +205,11 @@ def _load_macro_scores() -> dict:
         return {}
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT ticker, scores FROM holding_macro_scores").fetchall()
-        conn.close()
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT ticker, scores FROM holding_macro_scores").fetchall()
+        finally:
+            conn.close()
         result = {}
         for r in rows:
             try:
@@ -1403,15 +1407,17 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     _txn_markers: list[dict] = []
     try:
         _spconn = sqlite3.connect(str(DB_PATH), timeout=5)
-        for _spr in _spconn.execute(
-            "SELECT sell_date, shares_sold * sell_price, ticker, shares_sold, sell_price FROM sell_transactions"
-        ):
-            _spd, _spp = _spr[0], float(_spr[1])
-            _sell_proceeds_by_day[_spd] = _sell_proceeds_by_day.get(_spd, 0.0) + _spp
-            if float(_spr[1]) >= 500:
-                _txn_markers.append({"date": _spr[0], "type": "sell", "ticker": _spr[2], "shares": float(_spr[3]), "price": float(_spr[4])})
-        _txn_markers.extend(purchase_markers(_spconn))
-        _spconn.close()
+        try:
+            for _spr in _spconn.execute(
+                "SELECT sell_date, shares_sold * sell_price, ticker, shares_sold, sell_price FROM sell_transactions"
+            ):
+                _spd, _spp = _spr[0], float(_spr[1])
+                _sell_proceeds_by_day[_spd] = _sell_proceeds_by_day.get(_spd, 0.0) + _spp
+                if float(_spr[1]) >= 500:
+                    _txn_markers.append({"date": _spr[0], "type": "sell", "ticker": _spr[2], "shares": float(_spr[3]), "price": float(_spr[4])})
+            _txn_markers.extend(purchase_markers(_spconn))
+        finally:
+            _spconn.close()
     except Exception:
         pass
 
@@ -1739,21 +1745,23 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     cc_trade_count = 0
     try:
         _cc_conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        _cc_conn.row_factory = sqlite3.Row
-        _cur_year = today_date[:4] if today_date else str(datetime.now(TZ).year)
-        _ytd = _cc_conn.execute(
-            """SELECT sum(net_premium) as t FROM cc_positions
+        try:
+            _cc_conn.row_factory = sqlite3.Row
+            _cur_year = today_date[:4] if today_date else str(datetime.now(TZ).year)
+            _ytd = _cc_conn.execute(
+                """SELECT sum(net_premium) as t FROM cc_positions
                WHERE status IN ('closed','expired','assigned')
                  AND net_premium IS NOT NULL
                  AND COALESCE(closed_date, expiry) LIKE ?""",
-            (f"{_cur_year}%",)
-        ).fetchone()
-        _life = _cc_conn.execute(
-            """SELECT sum(net_premium) as t, count(*) as n FROM cc_positions
+                (f"{_cur_year}%",)
+            ).fetchone()
+            _life = _cc_conn.execute(
+                """SELECT sum(net_premium) as t, count(*) as n FROM cc_positions
                WHERE status IN ('closed','expired','assigned')
                  AND net_premium IS NOT NULL"""
-        ).fetchone()
-        _cc_conn.close()
+            ).fetchone()
+        finally:
+            _cc_conn.close()
         cc_ytd        = float(_ytd["t"]  or 0)
         cc_lifetime   = float(_life["t"] or 0)
         cc_trade_count = int(_life["n"]  or 0)
