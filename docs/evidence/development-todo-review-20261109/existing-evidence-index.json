@@ -1,0 +1,173 @@
+[
+  {
+    "path": "/Users/ai_lab/investment-scout-evidence-20261106/deployment-receipt.json",
+    "sha256": "36ecc9093f23bc42f72361df06ae6642c1ac4dcff97265de6c021a3b2e9fe9f9",
+    "verified_fields": {
+      "status": "DEPLOYED_HEALTH_VERIFIED",
+      "head": "64a795772e5b7d8cc2c6b39ee426da04388f004f",
+      "deployed_sha": "60a2eedc5bcae6e342311e72e07c6cec2d7c796e",
+      "investment_state_unchanged": true,
+      "governance_unchanged": true
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-scout-evidence-20261106/pr52-ci/validation-summary.json",
+    "sha256": "268d7287aec1f28ea08f9b5ffee9b6a6a6d45588dbd72f95f8e6a0c980cb7fef",
+    "verified_fields": {
+      "status": "PASS",
+      "head": "64a795772e5b7d8cc2c6b39ee426da04388f004f",
+      "pytest": {
+        "total": 4283,
+        "passed": 4265,
+        "failed": 0,
+        "skipped": 18,
+        "sha256": "f45d4f747fd007ef932d0070ec241c693767a5ed76c104650e321987871f6194"
+      }
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-scout-evidence-20261106/main52-ci/validation-summary.json",
+    "sha256": "eb1f8b5612199be73b2ce6966813347fc149fc60cb689a3a8722dd2c19a7973a",
+    "verified_fields": {
+      "status": "PASS",
+      "head": "60a2eedc5bcae6e342311e72e07c6cec2d7c796e",
+      "pytest": {
+        "total": 4283,
+        "passed": 4265,
+        "failed": 0,
+        "skipped": 18,
+        "sha256": "9f14b69bcb0da4e71a53697255e43027b2f6ea7a97c3f534f29e598e4622c6ce"
+      }
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-scout-evidence-20261106/overview-inspection.md",
+    "sha256": "a0ef8d183dc7bc808e93314a4fbe2da4a8b98892a5f2580a47690171c6339ba2"
+  },
+  {
+    "path": "/Users/ai_lab/investment-scout-nine-evidence-20261106/deployment-receipt.json",
+    "sha256": "173ca517ba758f4d3b8c600597826d9bce00097e1f29ad44385a51fffea463d6",
+    "verified_fields": {
+      "status": "DEPLOYED_HEALTH_VERIFIED",
+      "head": "6e2b847d94c13ada6512718dc0a27292dc7639fa",
+      "deployed_sha": "da252fcd36f7ecb1a6ca0fdaf2394b05950cba94",
+      "investment_state_unchanged": true,
+      "governance_unchanged": true
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-scout-nine-evidence-20261106/pr53-ci/validation-summary.json",
+    "sha256": "b3545010d6d45f1d6123d7e19be5f525b99ac56a9a73c1cdd7106cb16dcaf06f",
+    "verified_fields": {
+      "status": "PASS",
+      "head": "6e2b847d94c13ada6512718dc0a27292dc7639fa",
+      "pytest": {
+        "total": 4286,
+        "passed": 4268,
+        "failed": 0,
+        "skipped": 18,
+        "sha256": "c8773022ba0b3b660e5b3169fbbd2709e09a1138c2b1a305da62c433bd3102b0"
+      }
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-scout-nine-evidence-20261106/main53-ci/validation-summary.json",
+    "sha256": "5a1eae55140713207f79ec4c1b027377fc3f30002199d81b8a224c8afada20d2",
+    "verified_fields": {
+      "status": "PASS",
+      "head": "da252fcd36f7ecb1a6ca0fdaf2394b05950cba94",
+      "pytest": {
+        "total": 4286,
+        "passed": 4268,
+        "failed": 0,
+        "skipped": 18,
+        "sha256": "68051db8b1c7e2cfe77af0c52352ac10d146dc338d29a5ac0c116a0c5c1e9822"
+      }
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-scout-nine-evidence-20261106/recorded-outcomes.json",
+    "sha256": "a4f3a8ec3b36139c01d560c3b28e756a9a26943a5aca03292a281fca024ff472",
+    "verified_fields": {
+      "status": "PASS",
+      "candidate_count": 9,
+      "previous_events_unchanged": true,
+      "new_candidates": 0
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-ecc-outcomes-evidence-20261106/deployment.json",
+    "sha256": "a8f8a2a62344d919677f8235825a7b55d511fb0d80b491078fc9858c96a1e03e",
+    "verified_fields": {
+      "status": "DEPLOYED_HEALTH_VERIFIED",
+      "head": "688f9efd520e60e66d3c81e956b9fec6d77091b4",
+      "deployed_sha": "1bce9402b7861b7a1fa42b758c002278fde0cb0e",
+      "investment_state_unchanged": true,
+      "governance_unchanged": true
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-ecc-outcomes-evidence-20261106/pr54-ci/validation-summary.json",
+    "sha256": "e7fd469199fdade51c45eb843093a6320c01dc18befd1d139ce5873b29aadfda",
+    "verified_fields": {
+      "status": "PASS",
+      "head": "688f9efd520e60e66d3c81e956b9fec6d77091b4",
+      "pytest": {
+        "total": 4299,
+        "passed": 4281,
+        "failed": 0,
+        "skipped": 18,
+        "sha256": "a4b124cf6027cc48a02068edb89548884acfc04a60bafbe7a28bd45a43ea7401"
+      }
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-ecc-outcomes-evidence-20261106/live-verification.md",
+    "sha256": "44f3e78ba85b029a66a77025aa9c05bc815070f272c340b9393909fbcd3d5ad1"
+  },
+  {
+    "path": "/Users/ai_lab/investment-ecc55-evidence/deployment.json",
+    "sha256": "4caf2de7153796d6b7f15d2025f8629ccd3af621b2c7b7a7af8f4718b6be5ed7",
+    "verified_fields": {
+      "status": "DEPLOYED_HEALTH_VERIFIED",
+      "head": "5b01fc0f2e1a6345301199417934b7f28cd80c28",
+      "deployed_sha": "ac356658dc3d8149691d6e985679445bcb8b88d6",
+      "investment_state_unchanged": true,
+      "governance_unchanged": true
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-ecc55-evidence/ci-pass/validation-summary.json",
+    "sha256": "14a0dd4711c9566068b409061ee91f8cc965b6f752a6d8ad0ecc2bec24b7b272",
+    "verified_fields": {
+      "status": "PASS",
+      "head": "5b01fc0f2e1a6345301199417934b7f28cd80c28",
+      "pytest": {
+        "total": 4313,
+        "passed": 4295,
+        "failed": 0,
+        "skipped": 18,
+        "sha256": "e81a54cbadc378ab4dcaf1b545ddbd2c7f69be02d2415802a675dbafe1519454"
+      }
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-ecc55-evidence/main-ci/validation-summary.json",
+    "sha256": "8aed5cfb08c6f1a636fd12eb61e6468df031173ca19daf83f1171138cce6d2a9",
+    "verified_fields": {
+      "status": "PASS",
+      "head": "ac356658dc3d8149691d6e985679445bcb8b88d6",
+      "pytest": {
+        "total": 4313,
+        "passed": 4295,
+        "failed": 0,
+        "skipped": 18,
+        "sha256": "5b2e817e975f9eef18c9cfd58b8291798ec0fa06ffb591419a98fbb2f8eaa8cd"
+      }
+    }
+  },
+  {
+    "path": "/Users/ai_lab/investment-ecc55-evidence/verification.md",
+    "sha256": "8bc3d8ca823655e90a832562d643c2e6e8f19d2fd34e477aaca10173e2bbf566"
+  }
+]

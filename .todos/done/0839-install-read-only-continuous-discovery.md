@@ -74,9 +74,14 @@ Verify across all runs:
 
 ## Implementation and acceptance tracking
 
-See [rollout implementation and exact remaining gates](../docs/production-rollout-0835-0844.md) and the [plan](../docs/plans/production-foundation-0835-0844.md). Source preparation is not live operational acceptance. This task remains open until all requirements above have real evidence.
+See [rollout implementation and exact remaining gates](../../docs/production-rollout-0835-0844.md) and the [plan](../../docs/plans/production-foundation-0835-0844.md). Source preparation is not live operational acceptance. This task remains open until all requirements above have real evidence.
 
 
 ## Superseded
 
 Superseded by TODO 0848 under the simplified solo-owner workflow. Internal safety controls remain, but owner-facing operation is reduced to Go / No-Go. Preserve this file as historical design context.
+
+
+## Archived — 2026-11-09
+
+Moved to the existing done folder as **superseded**, not operationally completed. TODO 0848 (and its detailed child 0852) owns the current discovery acceptance and remaining owner-facing result. Historical unchecked criteria are intentionally preserved.

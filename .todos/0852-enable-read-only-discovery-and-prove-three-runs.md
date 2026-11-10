@@ -16,11 +16,11 @@ No implementation authority is granted.
 
 ## Install
 
-- [ ] Scout service/unit.
-- [ ] Scout timer.
-- [ ] Scheduler observer.
-- [ ] Development signal collector.
-- [ ] Private state/log locations with reviewed permissions.
+- [x] Scout service/unit.
+- [x] Scout timer.
+- [x] Scheduler observer.
+- [x] Development signal collector.
+- [x] Private state/log locations with reviewed permissions.
 
 ## Allowed signals
 
@@ -40,14 +40,14 @@ Observe at least three distinct genuine timer-triggered runs.
 
 Each qualifying run must preserve:
 
-- [ ] systemd/launch scheduler invocation identity;
-- [ ] America/New_York schedule slot;
-- [ ] exact source SHA;
-- [ ] start/end/duration;
-- [ ] signal counts;
-- [ ] discovered candidates;
-- [ ] deduplicated/suppressed counts;
-- [ ] final result.
+- [x] systemd/launch scheduler invocation identity;
+- [x] America/New_York schedule slot;
+- [x] exact source SHA;
+- [x] start/end/duration;
+- [x] signal counts;
+- [x] discovered candidates;
+- [x] deduplicated/suppressed counts;
+- [x] final result.
 
 Manual runs do not count.
 
@@ -57,14 +57,14 @@ Duplicate scheduler events do not count as additional successful runs.
 
 Across all three runs verify:
 
-- [ ] no Builder invocation;
-- [ ] no implementation worktree;
-- [ ] no source mutation;
-- [ ] no PR creation/publication;
-- [ ] no deployment;
-- [ ] no investment database mutation;
-- [ ] no holdings mutation;
-- [ ] no financial/execution action.
+- [x] no Builder invocation;
+- [x] no implementation worktree;
+- [x] no source mutation;
+- [x] no PR creation/publication;
+- [x] no deployment;
+- [x] no investment database mutation;
+- [x] no holdings mutation;
+- [x] no financial/execution action.
 
 ## Owner-facing result
 
@@ -216,13 +216,41 @@ one-attempt/rollback controls. See [recovery runbook](../docs/scout-current-job-
 
 Outstanding operational acceptance (this TODO stays incomplete):
 
-- [ ] Independent exact-head owner review and separate merge Go/No-Go.
-- [ ] Separately authenticated L5 production transition authorization; fresh PLAN_ONLY.
-- [ ] Verified source transition and rollback readiness without Scout execution.
-- [ ] Three new distinct genuine daily timer runs on the corrected deployed SHA,
+- [x] Independent exact-head owner review and separate merge Go/No-Go.
+- [x] Separately authenticated L5 production transition authorization; fresh PLAN_ONLY.
+- [x] Verified source transition and rollback readiness without Scout execution.
+- [x] Three new distinct genuine daily timer runs on the corrected deployed SHA,
       each with matching protected observer receipts and all safety/collection gates.
-- [ ] Final authoritative 3/3 review before any further implementation authority.
+- [x] Final authoritative 3/3 review before any further implementation authority.
 
 PR #19 remains unmerged/disabled; TODO 0853 remains blocked. No certification,
 fixture, manual execution, October 30 failure or prior-source receipt supplies
 new-source qualification credit. No deployment or operational completion is claimed.
+
+
+## Evidence review — 2026-11-09: operational acceptance satisfied; UI criterion open
+
+Current-source acceptance is **3/3**, advanced from 2/3 on November 9 at source
+`6db0b6ccf2494721d024a6e29ecf8fbb55c66bf6`. Genuine slots November 7/8/9 match
+root-owned authenticated closing receipts; no manual/fixture/historical-source credit.
+Scout, daily timer, scheduler observer, signal collector and private state are installed.
+All required identity, slot, SHA, timing, signal, candidate, duplicate/suppression
+and result fields are retained. Ledger/investment/Buffett integrity checks returned
+ok with no foreign-key violations; host receipts prove no Builder, worktree,
+source, PR, deployment, holdings or financial-state violations. All four listed
+activation flags remain false. Source/CI safeguards for idempotency, bounded retries,
+backlog, freshness and unavailable required signals remain enforced. Existing
+source-transition/merge/deployment evidence and current receipt are indexed in
+[the evidence review](../docs/evidence/development-todo-review-20261109/README.md).
+
+- [x] Three distinct genuine current-source runs and host safety acceptance.
+- [ ] Owner-facing **Discovery: READY** result. Certification API reports 3/3
+  but its status still inherits NOT READY from the incomplete scheduler inventory
+  (existing 1,000-record bound). This is a presentation/aggregate gap, not missing
+  genuine-run credit. Do not relax that bound or manufacture scheduler evidence.
+
+Keep this TODO in-progress solely for that original owner-facing criterion.
+No additional natural run, source reset or production deployment is needed to
+prove the existing 3/3. Resolving the projection belongs to separately authorized
+work; this housekeeping change does not implement it. This acceptance does not
+complete supervised, autonomy, physical-device or overall certification work.

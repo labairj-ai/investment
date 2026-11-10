@@ -14,9 +14,9 @@ Enable only read-only Development Agent discovery. It may identify work but may 
 
 ## Install
 
-- [ ] Scout service and timer.
-- [ ] Scheduler observer.
-- [ ] Signal collector.
+- [x] Scout service and timer.
+- [x] Scheduler observer.
+- [x] Signal collector.
 
 ## Initial signals
 
@@ -51,3 +51,31 @@ No-Go/stale-head and all technical gates remain fail-closed. No service is insta
 no live owner decision is created, and all activation flags remain disabled.
 See `docs/solo-owner-governance.md` for the active workflow. Source tests are not
 live acceptance. This TODO remains open until all its acceptance evidence exists.
+
+
+## Evidence review — 2026-11-09: operational acceptance satisfied; UI criterion open
+
+Current-source acceptance is **3/3**, advanced from 2/3 on November 9 at source
+`6db0b6ccf2494721d024a6e29ecf8fbb55c66bf6`. Genuine slots November 7/8/9 match
+root-owned authenticated closing receipts; no manual/fixture/historical-source credit.
+Scout, daily timer, scheduler observer, signal collector and private state are installed.
+All required identity, slot, SHA, timing, signal, candidate, duplicate/suppression
+and result fields are retained. Ledger/investment/Buffett integrity checks returned
+ok with no foreign-key violations; host receipts prove no Builder, worktree,
+source, PR, deployment, holdings or financial-state violations. All four listed
+activation flags remain false. Source/CI safeguards for idempotency, bounded retries,
+backlog, freshness and unavailable required signals remain enforced. Existing
+source-transition/merge/deployment evidence and current receipt are indexed in
+[the evidence review](../docs/evidence/development-todo-review-20261109/README.md).
+
+- [x] Three distinct genuine current-source runs and host safety acceptance.
+- [ ] Owner-facing **Discovery: READY** result. Certification API reports 3/3
+  but its status still inherits NOT READY from the incomplete scheduler inventory
+  (existing 1,000-record bound). This is a presentation/aggregate gap, not missing
+  genuine-run credit. Do not relax that bound or manufacture scheduler evidence.
+
+Keep this TODO in-progress solely for that original owner-facing criterion.
+No additional natural run, source reset or production deployment is needed to
+prove the existing 3/3. Resolving the projection belongs to separately authorized
+work; this housekeeping change does not implement it. This acceptance does not
+complete supervised, autonomy, physical-device or overall certification work.

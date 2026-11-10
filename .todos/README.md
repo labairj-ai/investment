@@ -42,7 +42,7 @@ Renumbered after completed task 0759. These are separate from the completed inve
 | [0760](0760-establish-repository-coding-agent-contract.md) | Establish Repository Coding-Agent Contract | in-progress |
 | [0761](0761-classify-coding-agent-change-risk.md) | Classify Coding-Agent Change Risk | in-progress |
 | [0762](0762-add-improvement-candidate-schema-and-ledger.md) | Add Improvement Candidate Schema and Ledger | in-progress |
-| [0763](0763-build-improvement-scout.md) | Build Improvement Scout | in-progress |
+| [0763](done/0763-build-improvement-scout.md) | Build Improvement Scout | done |
 | [0764](0764-score-improvement-candidate-value-and-risk.md) | Score Improvement Candidate Value and Risk | in-progress |
 | [0765](0765-build-todo-planner-for-approved-candidates.md) | Build TODO Planner for Approved Candidates | in-progress |
 | [0766](0766-add-isolated-git-worktree-manager.md) | Add Isolated Git Worktree Manager | in-progress |
@@ -61,7 +61,7 @@ Renumbered after completed task 0759. These are separate from the completed inve
 | [0779](0779-score-coding-agent-improvement-effectiveness.md) | Score Coding-Agent Improvement Effectiveness | in-progress |
 | [0780](0780-scan-architecture-and-technical-debt-for-improvement-candidates.md) | Scan Architecture and Technical Debt for Improvement Candidates | in-progress |
 | [0781](0781-enforce-coding-agent-golden-engineering-principles.md) | Enforce Coding-Agent Golden Engineering Principles | in-progress |
-| [0782](0782-schedule-daily-improvement-agent-discovery.md) | Schedule Daily Improvement-Agent Discovery | in-progress |
+| [0782](done/0782-schedule-daily-improvement-agent-discovery.md) | Schedule Daily Improvement-Agent Discovery | done |
 | [0783](0783-add-human-approval-and-escalation-workflow.md) | Add Human Approval and Escalation Workflow | in-progress |
 | [0784](0784-certify-the-coding-agent-harness-with-canary-and-adversarial-qa.md) | Certify the Coding-Agent Harness with Canary and Adversarial QA | in-progress |
 
@@ -179,7 +179,7 @@ Created October 23, 2026 from owner-supplied requirements. Initial tasks were cr
 | [0836](0836-implement-independent-validation-oracle-backend.md) | Select and Implement Independent Validation Oracle Backend | in-progress | 0835 |
 | [0837](0837-provision-live-certify-independent-oracle.md) | Provision and Live-Certify Independent Oracle | backlog | 0836 |
 | [0838](0838-complete-real-chatgpt-owner-ok-no-acceptance.md) | Complete Real ChatGPT Owner OK/NO Acceptance | backlog | 0835 |
-| [0839](0839-install-read-only-continuous-discovery.md) | Install Read-Only Continuous Discovery | backlog | 0835 |
+| [0839](done/0839-install-read-only-continuous-discovery.md) | Install Read-Only Continuous Discovery | superseded | 0835 |
 | [0840](0840-install-dedicated-deployment-controller.md) | Install Dedicated Deployment Controller | backlog | 0835, 0838 |
 | [0841](0841-execute-first-real-supervised-improvement-journey.md) | Execute First Real Supervised Improvement Journey | backlog | 0837, 0838, 0839 |
 | [0842](0842-execute-first-deployment-agent-production-pilot.md) | Execute First Deployment Agent Production Pilot | backlog | 0840, 0841 |
@@ -231,3 +231,14 @@ Created 2026-10-29 from [Investment ECC v2 implementation contract](../docs/plan
 | [0864](0864-engineering-control-center-release-acceptance.md) | Exact-head QA, controlled rollout and rollback | critical strategic | backlog | 0856–0863 |
 
 **Execution path:** 0856 → 0857/0860/0862 → 0858/0859/0861 → 0863 → 0864. Development QA may use fixtures, but genuine live certification and physical-device observations remain separate required acceptance. All implementation/activation flags remain unchanged by creating these TODOs.
+
+
+## Evidence reconciliation — 2026-11-09
+
+Closed: 0763, 0782, 0868, 0869 and 0870 in `done/`; 0839 archived there as
+superseded. Current-source Scout acceptance is 3/3 at `6db0b6ccf2494721d024a6e29ecf8fbb55c66bf6`.
+0848/0852 remain in-progress only for their original owner-facing Discovery: READY
+criterion: the incomplete scheduler aggregate still projects NOT READY. Earlier
+dated rollout notes above retain historical context rather than current status.
+See [the criterion/evidence matrix](../docs/evidence/development-todo-review-20261109/README.md).
+Supervised, autonomy, physical-device and overall certification records are separate.
