@@ -277,17 +277,19 @@ def _dispatch_urgent_notifications() -> None:
     """Send email for URGENT open recommendations not yet notified. Idempotent."""
     try:
         conn = agent_db._connect()
-        urgent = conn.execute(
-            """SELECT r.id, r.ticker, r.action, r.why_now, r.rationale, r.recommendation_score
-               FROM recommendations r
-               WHERE r.status='open' AND r.urgency_level='URGENT'
-                 AND NOT EXISTS (
-                     SELECT 1 FROM notification_events ne
-                     WHERE ne.recommendation_id = r.id AND ne.level='URGENT'
-                 )
-               ORDER BY r.created_at DESC""",
-        ).fetchall()
-        conn.close()
+        try:
+            urgent = conn.execute(
+                """SELECT r.id, r.ticker, r.action, r.why_now, r.rationale, r.recommendation_score
+                   FROM recommendations r
+                   WHERE r.status='open' AND r.urgency_level='URGENT'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM notification_events ne
+                         WHERE ne.recommendation_id = r.id AND ne.level='URGENT'
+                     )
+                   ORDER BY r.created_at DESC""",
+            ).fetchall()
+        finally:
+            conn.close()
     except Exception as e:
         print(f"[Notifications] DB query failed: {e}")
         return
