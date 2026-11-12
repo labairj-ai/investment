@@ -187,7 +187,7 @@ def position_daily_pnl(position, record, now):
     session = reporting_session(now)
     result = dict(pnl_day=None, pnl_day_status='UNVERIFIED_LEGACY_MARK', pnl_day_session=session,
                   pnl_day_as_of=None, pnl_day_observed_at=None, pnl_day_previous_session=None,
-                  pnl_day_source=SOURCE)
+                  pnl_day_source=SOURCE, pnl_day_previous_liability=None)
     if record is None:
         return result
     result.update(pnl_day_observed_at=record['observed_at'], pnl_day_previous_session=record['previous_session'])
@@ -225,7 +225,8 @@ def position_daily_pnl(position, record, now):
         contracts = number(position.get('contracts'))
         if contracts is None or contracts <= 0:
             raise ValueError('INVALID_CONTRACT_COUNT')
-        result.update(pnl_day=round((prior-mark)*contracts*100,2), pnl_day_status='ESTIMATED')
+        result.update(pnl_day=round((prior-mark)*contracts*100,2), pnl_day_status='ESTIMATED',
+                      pnl_day_previous_liability=prior*contracts*100)
     except (ValueError, KeyError, TypeError) as error:
         result['pnl_day_status'] = str(error) if isinstance(error, ValueError) else 'INVALID_MARK_RECORD'
     return result
@@ -252,5 +253,7 @@ def annotate_positions(conn, positions, now=None):
                 options_pnl=round(sum(p['pnl_day'] for p in priced),2) if complete else None,
                 partial_options_pnl=round(sum(p['pnl_day'] for p in priced),2) if priced else None,
                 complete=complete, closed_this_session=closed_today,
+                previous_liability=sum(p['pnl_day_previous_liability'] for p in priced) if complete else None,
+                partial_previous_liability=sum(p['pnl_day_previous_liability'] for p in priced) if priced else None,
                 statuses=dict(Counter(p['pnl_day_status'] for p in open_positions)),
                 source=SOURCE, reconciled_to_broker=False)

@@ -175,16 +175,23 @@ function renderCCDailyPnl(positions, report) {
   const hasStock = Number.isFinite(stock);
   const known = hasStock || hasOptions;
   const total = (hasStock ? stock : 0) + (hasOptions ? options : 0);
-  const pctStr = (known && prevTotal > 0)
-    ? ' (' + (total >= 0 ? '+' : '') + (total / prevTotal * 100).toFixed(2) + '%)'
-    : '';
-  value.textContent = known ? ccIncomeMoney(total) + pctStr : '—';
+  // Match the prior capital to the same known components as the dollar change.
+  const priorLiability = hasOptions
+    ? (complete ? report.previous_liability : report.partial_previous_liability) : 0;
+  const priorKnownValue = Number.isFinite(prevTotal) && Number.isFinite(priorLiability)
+    ? prevTotal - priorLiability : null;
+  const pctStr = hasStock && known && priorKnownValue > 0
+    ? (total >= 0 ? '+' : '') + (total / priorKnownValue * 100).toFixed(2) + '%' : '—';
+  value.textContent = known ? ccIncomeMoney(total) : '—';
   value.style.color = known ? (total<0?'#bd3e44':'#167352') : '#7a8697';
   if (label) label.textContent = complete ? 'Daily P&L · estimate' : known ? 'Daily P&L · partial' : 'Daily P&L · incomplete';
   const coverage = report ? report.priced_count+'/'+report.open_count+' open calls' : 'coverage unavailable';
-  if (breakdown) breakdown.textContent = 'Stocks '+(hasStock?ccIncomeMoney(stock):'unavailable')+' · options '+(hasOptions ? ccIncomeMoney(options)+(complete?'':' known') : 'unavailable')+' ('+coverage+')';
+  if (breakdown) { breakdown.textContent = pctStr; breakdown.style = breakdown.style || {}; breakdown.style.color = value.style.color; }
+  const componentDetail = 'Stocks '+(hasStock?ccIncomeMoney(stock):'unavailable')+' · options '+(hasOptions ? ccIncomeMoney(options)+(complete?'':' known') : 'unavailable')+' ('+coverage+')';
   if (status) {
-    const notes = ['Stock session '+value.dataset.stockSession];
+    const notes = [componentDetail, 'Stock session '+value.dataset.stockSession];
+    if (priorKnownValue > 0) notes.push('Percentage uses prior stocks minus the prior liability of the same priced calls');
+    else notes.push('Percentage unavailable: matching prior value missing');
     if (!complete && known) notes.push('Partial total; unavailable contributions are excluded');
     if (report && report.open_count > report.priced_count) notes.push((report.open_count-report.priced_count)+' open calls missing daily P&L');
     if (report && !matched) notes.push('option session mismatch');
