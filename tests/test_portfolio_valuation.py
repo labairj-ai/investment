@@ -104,10 +104,10 @@ def test_client_expires_headline_and_shared_goal_value():
     js = source + '''
 const nodes = {'kpi-net-value':{}, 'kpi-net-status':{}};
 global.document = {getElementById:id=>nodes[id]};
-const d = {totalValue:9100,valuation:{complete:true,net_value:9100,valid_until:'2026-11-05T16:30:00Z'}};
+const d = {totalValue:9100,grossStockValue:10000,valuation:{complete:true,net_value:9100,valid_until:'2026-11-05T16:30:00Z'}};
 if (expirePortfolioValuation(d, Date.parse('2026-11-05T16:29:59Z'))) throw Error('early expiry');
 if (!expirePortfolioValuation(d, Date.parse('2026-11-05T16:30:00Z'))) throw Error('stale accepted');
-if (d.totalValue !== null || d.valuation.net_value !== null || nodes['kpi-net-value'].textContent !== 'Unavailable') throw Error('stale total retained');
+if (d.totalValue !== null || d.valuation.net_value !== null || nodes['kpi-net-value'].textContent !== '$10,000.00') throw Error('stale total retained');
 '''
     subprocess.run(['node', '-e', js], check=True, capture_output=True, text=True)
 
@@ -129,9 +129,11 @@ def test_dashboard_fixture_uses_shared_nullable_net_and_emits_valid_javascript(t
         with sqlite3.connect(mem_db) as target:
             target.executescript('\n'.join(source_conn.iterdump()))
     page = dashboard.build_dashboard([dict(day=SESSION, total_value=10000., total_change_dollars=0., total_change_pct=0., spy_change_pct=0.)], [], [])
-    assert ('id="kpi-net-value">$9,100.00' if complete else 'id="kpi-net-value">Unavailable') in page
+    assert ('id="kpi-net-value">$9,100.00' if complete else 'id="kpi-net-value">$10,000.00') in page
     assert ('"totalValue": 9100.0' if complete else '"totalValue": null') in page
     assert '"grossStockValue": 10000.0' in page
+    assert ('>$9,100</span>' if complete else '>$10,000</span>') in page
+    assert ('current · tracked net estimate' if complete else 'Stock value · option adjustment incomplete') in page
     assert 'Stocks vs SPY' in page
     assert 'Tracked Net Value — History' not in page
     assert 'net-value-history' not in page
@@ -191,12 +193,12 @@ def test_after_close_quotes_expire_at_next_open_not_midnight():
     assert value_portfolio(conn, 10000., SESSION, next_open)['net_value'] is None
 
 
-def test_unavailable_net_cannot_claim_zero_dollar_quarterly_goals_or_zero_capital_needed():
+def test_missing_net_shows_stock_based_goals_without_fabricating_net_yield_or_zero_capital():
     source = (Path(__file__).resolve().parents[1] / 'generate_dashboard.py').read_text()
     start = source.index('function renderGoalsCard()')
     end = source.index('// Auto-load dividends', start)
     function = source[start:end].replace('{{', '{').replace('}}', '}')
-    js = '''
+    js = (Path(__file__).resolve().parents[1] / 'static/portfolio_valuation.js').read_text() + '''
 const nodes = {};
 const document = {getElementById:id=>nodes[id] ||= {style:{}}};
 const D = {totalValue:null,grossStockValue:10000,layerColorsByNum:{}};
@@ -207,8 +209,11 @@ function _flashEl(){}
 ''' + function + '''
 renderGoalsCard();
 const goals = nodes['goal-div-milestones'].innerHTML;
-if (!goals.includes('Valuation unavailable')) throw Error('missing unavailable state');
+if (goals.includes('Valuation unavailable')) throw Error('stock goal hidden by missing option quote');
+if (nodes['goal-port-value'].textContent !== '$10,000') throw Error('stock goal missing');
+if (!nodes['goal-port-basis'].textContent.includes('option adjustment incomplete')) throw Error('missing gross basis');
+if (D.totalValue !== null) throw Error('invented net value');
 if (goals.includes('deploy ~$0')) throw Error('fabricated zero capital recommendation');
-if (nodes['goal-port-pct'].textContent !== 'Net value unavailable') throw Error('zero target progress');
+if (nodes['goal-port-pct'].textContent !== '0.5% of $2M target') throw Error('incorrect stock target progress');
 '''
     subprocess.run(['node','-e',js], check=True, capture_output=True, text=True)

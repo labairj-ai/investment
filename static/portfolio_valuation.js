@@ -1,3 +1,29 @@
+// Keep the display value separate from the nullable, fully adjusted net value.
+function portfolioValueForDisplay(data) {
+  if (data.valuation?.complete !== false && Number.isFinite(data.totalValue)) {
+    return {value:data.totalValue, basis:'NET'};
+  }
+  if (Number.isFinite(data.grossStockValue)) {
+    return {value:data.grossStockValue, basis:'GROSS'};
+  }
+  return {value:null, basis:'UNAVAILABLE'};
+}
+
+function renderPortfolioValue(data) {
+  const display = portfolioValueForDisplay(data);
+  const value = document.getElementById('kpi-net-value');
+  const label = document.getElementById('kpi-net-label');
+  const gross = document.getElementById('kpi-gross-value');
+  const money = n => n.toLocaleString('en-US',{style:'currency',currency:'USD'});
+  if (value) value.textContent = display.value === null ? 'Unavailable' : money(display.value);
+  if (label) label.textContent = display.basis === 'GROSS'
+    ? 'Stock value · option adjustment incomplete' : 'Tracked Net Value · estimate';
+  if (gross) gross.textContent = display.basis === 'GROSS'
+    ? 'Gross stocks · open-call liability unavailable'
+    : 'Gross stocks '+(Number.isFinite(data.grossStockValue) ? money(data.grossStockValue) : 'unavailable');
+  return display;
+}
+
 // A generated snapshot must stop presenting a complete value when quotes age out.
 function expirePortfolioValuation(data, now) {
   const report = data.valuation;
@@ -7,10 +33,9 @@ function expirePortfolioValuation(data, now) {
     report.complete = false;
     report.net_value = null;
     data.totalValue = null;
-    const value = document.getElementById('kpi-net-value');
+    renderPortfolioValue(data);
     const status = document.getElementById('kpi-net-status');
-    if (value) value.textContent = 'Unavailable';
-    if (status) status.textContent = 'Option quotes have expired. Waiting for a fresh pricing snapshot. Gross stocks remain a separate snapshot; cash and untracked instruments are excluded.';
+    if (status) status.textContent = 'Option quotes have expired. Waiting for a fresh pricing snapshot. Showing the gross stock snapshot while the option adjustment is incomplete; cash and untracked instruments are excluded.';
     return true;
   }
   return false;
@@ -30,12 +55,8 @@ function applyPortfolioValuation(data, report, now) {
   data.valuation = report;
   data.totalValue = report.net_value;
   data.grossStockValue = report.gross_stock_value;
-  const value = document.getElementById('kpi-net-value');
-  const gross = document.getElementById('kpi-gross-value');
+  renderPortfolioValue(data);
   const status = document.getElementById('kpi-net-status');
-  const money = n => n.toLocaleString('en-US',{style:'currency',currency:'USD'});
-  if (value) value.textContent = report.complete ? money(report.net_value) : 'Unavailable';
-  if (gross) gross.textContent = 'Gross stocks '+(Number.isFinite(report.gross_stock_value) ? money(report.gross_stock_value) : 'unavailable');
   if (status) {
     const notes = [report.priced_count+'/'+report.open_count+' open calls priced', 'session '+report.session,
       'Reported mark when available; otherwise bid/ask midpoint estimate. Cash and untracked instruments excluded.'];

@@ -1361,6 +1361,9 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     finally:
         _valuation_conn.close()
     total_v = valuation["net_value"]
+    display_v = total_v if total_v is not None else valuation["gross_stock_value"]
+    display_pct = min(100., max(0., display_v / 2_000_000 * 100)) if display_v is not None else 0.
+    display_basis = 'current · tracked net estimate' if total_v is not None else 'stock value · option adjustment incomplete'
     valuation_note = (
         f"{valuation['priced_count']}/{valuation['open_count']} open calls priced · "
         f"session {valuation['session']}. "
@@ -2874,9 +2877,9 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
   <!-- KPI row -->
   <div class="kpi-row">
     <div class="kpi">
-      <div class="label">Tracked Net Value · estimate</div>
-      <div class="value" id="kpi-net-value">{f'${total_v:,.2f}' if total_v is not None else "Unavailable"}</div>
-      <div class="sub" id="kpi-gross-value">Gross stocks {money(total_value_csv)}</div>
+      <div class="label" id="kpi-net-label">{'Tracked Net Value · estimate' if total_v is not None else 'Stock value · option adjustment incomplete'}</div>
+      <div class="value" id="kpi-net-value">{f'${display_v:,.2f}' if display_v is not None else "Unavailable"}</div>
+      <div class="sub" id="kpi-gross-value">{'Gross stocks '+money(total_value_csv) if total_v is not None else 'Gross stocks · open-call liability unavailable'}</div>
       <details style="font-size:11px;line-height:1.5;margin-top:5px;"><summary>Sources &amp; coverage</summary><div id="kpi-net-status">{_html.escape(valuation_note)}</div></details>
     </div>
     <div class="kpi">
@@ -2955,16 +2958,16 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
           <div style="display:flex;align-items:center;gap:16px;">
             <div>
               <div style="display:flex;align-items:baseline;gap:5px;">
-                <span id="goal-port-value" style="font-size:22px;font-weight:700;color:#1a2340;">—</span>
-                <span style="font-size:11px;color:#7f8c8d;">current</span>
+                <span id="goal-port-value" style="font-size:22px;font-weight:700;color:#1a2340;">{f'${display_v:,.0f}' if display_v is not None else '—'}</span>
+                <span id="goal-port-basis" style="font-size:11px;color:#7f8c8d;">{display_basis}</span>
               </div>
             </div>
             <div style="flex:1;">
               <div style="background:#dbeafe;border-radius:4px;height:8px;overflow:hidden;margin-bottom:4px;">
-                <div id="goal-port-bar" style="height:100%;background:linear-gradient(90deg,#2980b9,#3498db);border-radius:4px;width:0%;transition:width .5s;"></div>
+                <div id="goal-port-bar" style="height:100%;background:linear-gradient(90deg,#2980b9,#3498db);border-radius:4px;width:{display_pct}%;transition:width .5s;"></div>
               </div>
               <div style="display:flex;justify-content:space-between;font-size:10px;">
-                <span id="goal-port-pct" style="color:#2980b9;font-weight:600;">0% of target</span>
+                <span id="goal-port-pct" style="color:#2980b9;font-weight:600;">{f'{display_pct:.1f}% of $2M target' if display_v is not None else 'Portfolio value unavailable'}</span>
                 <span style="color:#aaa;">$2,000,000 by 2036</span>
               </div>
             </div>
@@ -3769,6 +3772,7 @@ function checkPortfolioValuation() {{
   }}
 }}
 document.addEventListener('DOMContentLoaded', checkPortfolioValuation);
+document.addEventListener('DOMContentLoaded', renderGoalsCard);
 document.addEventListener('visibilitychange', checkPortfolioValuation);
 setInterval(checkPortfolioValuation, 10000);
 async function updateLivePortfolioValuation() {{
@@ -4299,7 +4303,9 @@ function renderGoalsCard() {{
     ? (Math.pow(GOAL_MONTHLY / monthly, 1 / YEARS_LEFT) - 1) * 100 : null;
 
   // ── Portfolio value goal ──
-  const portVal     = D.totalValue || 0;
+  const portDisplay = portfolioValueForDisplay(D);
+  const portAvailable = portDisplay.value !== null;
+  const portVal     = portAvailable ? portDisplay.value : 0;
   const portPct     = Math.min(100, portVal > 0 ? portVal / GOAL_PORT * 100 : 0);
   const portGap     = GOAL_PORT - portVal;
   const portCagr    = portVal > 0 ? (Math.pow(GOAL_PORT / portVal, 1 / YEARS_LEFT) - 1) * 100 : null;
@@ -4324,18 +4330,21 @@ function renderGoalsCard() {{
 
   // ── Portfolio Value Goal DOM updates ──
   const pvEl = document.getElementById("goal-port-value");
-  if (pvEl) pvEl.textContent = portVal > 0 ? fmt$(portVal) : "—";
+  if (pvEl) pvEl.textContent = portAvailable ? fmt$(portVal) : "—";
+  const basisEl = document.getElementById("goal-port-basis");
+  if (basisEl) basisEl.textContent = portDisplay.basis === 'GROSS'
+    ? 'stock value · option adjustment incomplete' : 'current · tracked net estimate';
   const pbEl = document.getElementById("goal-port-bar");
   if (pbEl) pbEl.style.width = portPct + "%";
   const ppEl = document.getElementById("goal-port-pct");
   if (ppEl) {{
-    ppEl.textContent = portVal > 0 ? portPct.toFixed(1) + "% of $2M target" : "Net value unavailable";
+    ppEl.textContent = portAvailable ? portPct.toFixed(1) + "% of $2M target" : "Portfolio value unavailable";
     ppEl.style.color = portPct >= 50 ? "#27ae60" : "#2980b9";
   }}
   const pcEl = document.getElementById("goal-port-cagr");
   if (pcEl) pcEl.textContent = portCagr != null
     ? `Required CAGR: ${{portCagr.toFixed(1)}}%/yr · ${{fmt$(portGap)}} still needed`
-    : "Waiting for complete option valuation";
+    : (portAvailable ? "Positive portfolio value needed for CAGR" : "Waiting for stock valuation");
 
   // Quarterly targets with recommendations
   const today        = new Date();
