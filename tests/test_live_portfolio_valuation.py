@@ -14,7 +14,7 @@ JS=(ROOT/'static/portfolio_valuation.js').read_text()
 def node(body):
     prelude='''
 const assert = require('node:assert/strict');
-const nodes = {'kpi-net-value':{},'kpi-gross-value':{},'kpi-net-status':{}};
+const nodes = {'kpi-net-value':{},'kpi-net-label':{},'kpi-gross-value':{},'kpi-net-status':{}};
 global.document={getElementById:id=>nodes[id]};
 const now=Date.parse('2026-11-05T16:10:00Z');
 const report={complete:true,net_value:9100,gross_stock_value:10000,open_count:1,priced_count:1,
@@ -45,7 +45,8 @@ def test_an_expired_server_snapshot_cannot_restore_a_stale_value():
     node('''
 assert(applyPortfolioValuation(data,report,Date.parse('2026-11-05T16:36:00Z')));
 assert.equal(data.totalValue,null);
-assert.equal(nodes['kpi-net-value'].textContent,'Unavailable');
+assert.equal(nodes['kpi-net-value'].textContent,'$10,000.00');
+assert.equal(nodes['kpi-net-label'].textContent,'Stock value · option adjustment incomplete');
 ''')
 
 
@@ -117,3 +118,32 @@ def test_snapshot_route_only_reads_the_fixed_generated_artifact(tmp_path):
     (tmp_path/'out').mkdir();(tmp_path/'out'/'portfolio-valuation.json').write_text('{"complete":false,"net_value":null}')
     output.clear();exec(compile(node_ast,'fixture-route','exec'),scope)
     assert output==[dict(ok=True,valuation=dict(complete=False,net_value=None))]
+
+
+def test_missing_call_quote_preserves_stock_display_and_net_remains_unknown():
+    node('''
+const missing={...report,complete:false,net_value:null,priced_count:0,issues:['TEST #1: MISSING_QUOTE']};
+assert(applyPortfolioValuation(data,missing,now));
+assert.equal(data.totalValue,null);
+assert.equal(data.valuation.net_value,null);
+assert.equal(nodes['kpi-net-value'].textContent,'$10,000.00');
+assert.equal(nodes['kpi-net-label'].textContent,'Stock value · option adjustment incomplete');
+assert(nodes['kpi-net-status'].textContent.includes('MISSING_QUOTE'));
+assert.deepEqual(portfolioValueForDisplay(data),{value:10000,basis:'GROSS'});
+assert(applyPortfolioValuation(data,report,now));
+assert.equal(nodes['kpi-net-value'].textContent,'$9,100.00');
+assert.equal(nodes['kpi-net-label'].textContent,'Tracked Net Value · estimate');
+assert.deepEqual(portfolioValueForDisplay(data),{value:9100,basis:'NET'});
+''')
+
+
+def test_zero_stock_value_is_visible_but_invalid_stock_value_is_unavailable():
+    node('''
+const missing={...report,complete:false,net_value:null,priced_count:0,gross_stock_value:0};
+assert(applyPortfolioValuation(data,missing,now));
+assert.equal(nodes['kpi-net-value'].textContent,'$0.00');
+assert.equal(data.totalValue,null);
+assert(applyPortfolioValuation(data,{...missing,gross_stock_value:null},now));
+assert.equal(nodes['kpi-net-value'].textContent,'Unavailable');
+assert.equal(portfolioValueForDisplay(data).value,null);
+''')
