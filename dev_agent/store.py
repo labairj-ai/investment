@@ -47,6 +47,15 @@ def digest(value):
     return hashlib.sha256(bounded(value).encode()).hexdigest()
 
 
+def finding_identity(proposal):
+    """Ignore source movement for static findings, retaining defect provenance."""
+    fields = {k: proposal.get(k) for k in ("source", "problem", "files", "evidence")}
+    if proposal.get("source") in {"todo", "architecture"}:
+        fields["files"] = sorted(set(fields["files"]))
+        fields["evidence"] = sorted({re.sub(r":\d+(?=:|$)", "", re.sub(r"^[0-9a-f]{40,64}:", "", ref)) for ref in fields["evidence"]})
+    return digest(fields)
+
+
 class Store:
     def __init__(self, path):
         raw_path = Path(path).expanduser()
@@ -108,6 +117,11 @@ class Store:
             old = db.execute("SELECT id FROM dev_candidates WHERE identity=?", (identity,)).fetchone()
             if old:
                 return old[0]
+            if proposal["source"] in {"todo", "architecture"}:
+                stable = finding_identity(proposal)
+                for row in db.execute("SELECT id,payload FROM dev_candidates"):
+                    if finding_identity(json.loads(row["payload"])) == stable:
+                        return row["id"]
             cid = str(uuid.uuid4())
             db.execute("INSERT INTO dev_candidates VALUES (?,?,?,?)", (cid, identity, time.time(), payload))
             self._append(db, cid, "STATE", {"state": "DISCOVERED"}, "discover:" + cid)

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from .discovery import scout, score
 from .policy import classify
 from .reviewed_source import reviewed_sources
-from .store import digest
+from .store import finding_identity
 
 
 def slot(now=None):
@@ -72,7 +72,8 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
             return duplicate
         existing = store.list(500)
         active = len([c for c in existing if c["state"] not in {"CLOSED", "REJECTED"}])
-        suppressed = {digest({k:c[k] for k in ("source", "problem", "files", "evidence")}) for c in existing}
+        with store.connect() as db:
+            suppressed = {finding_identity(json.loads(r[0])) for r in db.execute("SELECT payload FROM dev_candidates")}
         with store.connect() as db:
             attempts = db.execute("SELECT count(*) FROM dev_events WHERE event_id LIKE ?", (key+":attempt:%",)).fetchone()[0]
         if attempts >= 2: return dict(status="NEEDS_HUMAN", reason="daily retry budget exhausted", slot=key)

@@ -16,7 +16,7 @@ from time_utils import today_eastern
 
 from .policy import classify, protected_graph
 from .reviewed_source import reviewed_sources,current
-from .store import CATEGORIES, SOURCES, bounded, digest
+from .store import CATEGORIES, SOURCES, bounded, digest, finding_identity
 
 SCORE_VERSION = "value-risk-1"
 
@@ -54,7 +54,7 @@ def architecture_signals(root, exclusions=None, *, reviewed=None):
     for rel in sorted(graph):
         if rel.startswith("tests/") or rel in exclusions:
             continue
-        text = reviewed.texts[rel]; lines = text.splitlines()
+        text = reviewed.texts[rel]
         try:
             tree = ast.parse(text)
         except SyntaxError:
@@ -63,25 +63,8 @@ def architecture_signals(root, exclusions=None, *, reviewed=None):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and len(node.body) >= 5:
                 signature = hashlib.sha256(json.dumps([ast.dump(n) for n in node.body]).encode()).hexdigest()
                 duplicate_bodies.setdefault(signature, []).append((rel, node.name, node.lineno))
-        handlers = [ast.dump(n.type) if n.type else "bare" for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler)]
-        repeated = max(Counter(handlers).values(), default=0)
-        todo_count = len(re.findall(r"(?m)^\s*#\s*(?:TODO|FIXME)\b", text))
-        # Size alone does not trigger a refactor proposal.
-        if len(lines) > 1500 and (repeated >= 10 or todo_count >= 5):
-            signals.append(dict(source="architecture", category="REFACTOR", title=f"Review exception boundaries in {rel}", problem=f"{len(lines)} lines with {repeated} repeated exception types and {todo_count} debt markers", files=[rel], evidence=[f"{rel}:1"], outcome="Reduce repeated failure handling with measured behavior parity", validation="focused regression and full suite"))
-    # Deterministic cycle detection, bounded to one report per cycle.
-    visiting, done, cycles = [], set(), set()
-    def visit(node):
-        if node in visiting:
-            cycle = tuple(sorted(visiting[visiting.index(node):]))
-            cycles.add(cycle); return
-        if node in done: return
-        visiting.append(node)
-        for dep in sorted(graph.get(node, ())): visit(dep)
-        visiting.pop(); done.add(node)
-    for node in sorted(graph): visit(node)
-    for cycle in sorted(cycles):
-        signals.append(dict(source="architecture", category="CONSOLIDATE", title="Review import cycle", problem="Import cycle: " + " -> ".join(cycle), files=list(cycle), evidence=list(cycle), outcome="Remove initialization-order coupling without behavior changes", validation="import-order and regression tests"))
+    # Static cycles and handler/line counts do not demonstrate a defect.
+    # Reproduced failures still enter through test, CI and runtime signals.
     for signature, locations in sorted(duplicate_bodies.items()):
         if len({p for p,_,_ in locations}) < 2: continue
         signals.append(dict(source="architecture",category="CONSOLIDATE",title="Review duplicated helper implementation",problem="Identical nontrivial function bodies can diverge when maintained separately",files=sorted({p for p,_,_ in locations}),evidence=[f"{p}:{line}:{name}" for p,name,line in locations],outcome="Confirm common semantics before consolidating duplicate logic",validation="shared-helper parity and regression tests"))
@@ -112,7 +95,7 @@ def scout(root, signals=(), cap=5, exclusions=None, suppressed=(), enabled_sourc
         if proposal.get("category") not in CATEGORIES or proposal.get("source") not in SOURCES or not proposal.get("evidence") or not proposal.get("validation"):
             continue
         bounded(proposal)
-        identity = digest({k: proposal.get(k) for k in ("source", "problem", "files", "evidence")})
+        identity = finding_identity(proposal)
         if identity in seen or identity in suppressed and not proposal.get("signal_id") or per_category[proposal["category"]] >= max(1, cap // 2): continue
         seen.add(identity); per_category[proposal["category"]] += 1; chosen.append(proposal)
         if len(chosen) >= max(0, cap): break

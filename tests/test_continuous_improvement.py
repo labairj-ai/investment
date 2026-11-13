@@ -337,3 +337,29 @@ def test_aggregate_leaves_ci_prior_authority_to_event_checker(monkeypatch,ci_var
     assert aggregate.cc_command('python','attacker-prior')==['python','scripts/check_cc_contract.py']
 
 from test_pr13_evidence_integrity import complete_evidence
+
+
+@pytest.mark.parametrize('state', ['REJECTED', 'CLOSED'])
+def test_reviewed_ci_run_does_not_reopen_on_repoll_but_new_failure_does(store, state):
+    item=signals.signal('ci','Tests','Repeated CI failure: Tests',['.github/workflows/test.yml'],
+                        'https://github.com/example/repo/actions/runs/1',outcome='Restore green CI',validation='Reproduce failure and run regression')
+    cid=signals.ingest(store,[item])['candidates'][0]
+    with store.connect(True) as db:
+        store._append(db,cid,'STATE',dict(state=state),'fixture-state:'+state)
+    reviewed=store.get(cid)
+    repoll=dict(item,observed_at=time.time()+1)
+    assert signals.ingest(store,[repoll]) == dict(candidates=[],deduplicated=0,suppressed=1)
+    assert store.get(cid)==reviewed
+    fresh=dict(repoll,evidence_location='https://github.com/example/repo/actions/runs/2')
+    new=signals.ingest(store,[fresh])
+    assert len(new['candidates'])==1 and new['candidates'][0]!=cid
+
+
+def test_reproduced_import_and_exception_failures_remain_actionable(repo, store):
+    failures=[signals.signal(source,'module','Circular import failed' if source=='ci' else 'Dashboard query raised OperationalError',
+                             ['example.py'],'run:1' if source=='ci' else 'journal:1',outcome='Fix demonstrated failure',validation='Reproducer and regression')
+              for source in ['ci','telemetry']]
+    from dev_agent.discovery import scout
+    found=scout(repo,failures,cap=5)
+    assert {p['signal_id'] for p in found['proposals']}=={p['signal_id'] for p in failures}
+    assert len(signals.ingest(store,found['proposals'])['candidates'])==2
