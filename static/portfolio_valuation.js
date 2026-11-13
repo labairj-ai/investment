@@ -39,8 +39,12 @@ function applyPortfolioValuation(data, report, now) {
   if (status) {
     const notes = [report.priced_count+'/'+report.open_count+' open calls priced', 'session '+report.session,
       'Reported mark when available; otherwise bid/ask midpoint estimate. Cash and untracked instruments excluded.'];
+    if (Array.isArray(report.broker_quote_positions) && report.broker_quote_positions.length) notes.push('User-supplied broker midpoint: '+report.broker_quote_positions.join(', ')+'. Dated quote; normal freshness limits apply.');
     if (report.observations && report.observations.length) notes.push('Quotes observed '+[...new Set(report.observations)].join(', '));
-    if (!report.complete && report.issues) notes.push(report.issues.join('; '));
+    if (!report.complete && report.issues) {
+      notes.push(report.issues.join('; '));
+      if (report.issues.some(issue=>issue.includes('QUOTE'))) notes.push('Missing feed coverage can be filled with a dated broker bid/ask quote for the exact contract.');
+    }
     status.textContent = notes.join(' · ');
   }
   expirePortfolioValuation(data, now);

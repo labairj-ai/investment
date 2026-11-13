@@ -1350,11 +1350,13 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     )
 
     from portfolio_valuation import value_portfolio
+    from cc_broker_quotes import load as load_broker_quotes
     from portfolio_value_history import historical_values
     _valuation_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
     try:
         _valuation_conn.execute('BEGIN')
-        valuation = value_portfolio(_valuation_conn, total_value_csv, today_date)
+        valuation = value_portfolio(_valuation_conn, total_value_csv, today_date,
+                                    broker_quotes=load_broker_quotes(OUT_PATH.parent / 'cc-broker-quotes.json'))
         value_history = historical_values(_valuation_conn, portfolio)
     finally:
         _valuation_conn.close()
@@ -1369,6 +1371,10 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
         + (" Quotes observed " + ", ".join(sorted(set(valuation['observations']))) + "."
            if valuation['observations'] else "")
     )
+    if not valuation['complete'] and any('QUOTE' in issue for issue in valuation['issues']):
+        valuation_note += ' Missing feed coverage can be filled with a dated broker bid/ask quote for the exact contract.'
+    if valuation['broker_quote_positions']:
+        valuation_note += " User-supplied broker midpoint: " + ", ".join(valuation['broker_quote_positions']) + ". Dated quote; normal freshness limits apply."
     total_chg = sum(h["change_dollars"] for h in today_holdings)
     prev_total = total_value_csv - total_chg
     total_chg_pct = (total_chg / prev_total * 100.0) if prev_total else 0.0
@@ -2875,8 +2881,8 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     </div>
     <div class="kpi">
       <div class="label" id="kpi-daily-label">Daily P&amp;L · loading</div>
-      <div class="value" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-stock-session="{today_date}" data-prev-total="{round(prev_total, 2) if valuation['open_count'] == 0 else ''}">—</div>
-      <div class="sub" id="kpi-daily-pct">Stocks {money(total_chg)} · option data loading</div>
+      <div class="value" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-stock-session="{today_date}" data-prev-total="{round(prev_total, 2)}">—</div>
+      <div class="sub" id="kpi-daily-pct">—</div>
       <details style="font-size:11px;color:#7f8c8d;line-height:1.5;margin-top:5px;"><summary style="cursor:pointer;">Sources &amp; coverage</summary><div id="kpi-daily-status">Session {today_date} · tracked holdings</div></details>
     </div>
     <div class="kpi">

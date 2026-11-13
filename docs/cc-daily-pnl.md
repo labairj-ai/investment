@@ -30,3 +30,39 @@ The historical value chart is a read-only projection of original stock snapshots
 Sources include dated display records, append-only observations, exact-contract option quote snapshots, live prospective candidate quote evidence and explicitly backfilled daily bars. These are read only; decision, simulator, fill and learning evidence is never relabelled or rewritten. Closing/expiry dates bound each position's lifetime, and calls closed during a date are excluded at end of day.
 
 `venv/bin/python scripts/backfill_cc_display_history.py --db out/investment.db` is a read-only dry run. The explicitly authorized `--apply` mode stores append-only `cc_display_historical_marks` after a separate production backup. It requests only exact standard contract symbols, unadjusted completed-session bars with nonzero volume, and excludes dates before opening/after closing and incomplete current-session bars. It does not overwrite any `portfolio_day` row or old evidence. Expired/unavailable histories remain explicit gaps; brokerage statements or dated quote imports are required to fill unsupported dates. Reruns are idempotent, while changed provider bars create new evidence revisions.
+
+## Broker evidence for a contract missing from Yahoo
+
+A dated user-supplied broker bid/ask may fill a missing **current display valuation**
+through `out/cc-broker-quotes.json`. This sidecar is separate from investment.db;
+position rows, daily P&L baselines and historical valuations are never modified.
+Valid Yahoo observations retain precedence. Missing feed coverage does not change
+an expiration or make the contract invalid.
+
+`scripts/import_cc_broker_quote.py --db out/investment.db --input quote.json
+--evidence screenshot.png` defaults to a read-only dry run. Input JSON must contain
+`position_id`, `ticker`, `strike`, `expiry`, `contracts`, `opened_date`, `bid`, `ask`,
+and a timezone-qualified `quoted_at`. Identity must exactly match the open position.
+The importer hashes the evidence file and records quote time separately from receipt
+time. `--apply` appends dated evidence to the display sidecar and atomically updates
+the existing valuation JSON using its labelled stock snapshot. It never opens the
+authoritative database writable. Serialize imports with the provided CLI.
+
+Only a valid regular-session spread is accepted. The original quote time is subject
+to the existing 30-minute freshness limit relative to session close; a closing quote
+lasts until the next market open. Reimport does not refresh time. New sessions need
+new quotes if Yahoo remains unavailable. An invalid/stale input is rejected before
+artifact writes; later generation revalidates all evidence and position identities.
+The headline and live goal share the resulting nullable estimate. Source/coverage
+explicitly identifies any user-supplied broker midpoint; this is not an automatic
+broker feed or account-equity reconciliation. Entry premium and last trade remain
+ineligible substitutes for a missing mark.
+
+Daily P&L shows its dollar amount and percentage on the card. Component amounts,
+coverage, timing and estimate notes are inside Sources & coverage. The percentage
+uses prior stock value minus the verified prior liability of exactly the same calls
+included in the dollar change. A partial dollar total has a partial percentage over
+the same known components; missing calls are not fabricated. When only stock change
+is available its percentage uses prior stock value. Missing or nonpositive matching
+prior capital leaves the percentage unavailable. This is a display estimate, not a
+cash-flow-adjusted brokerage account return.

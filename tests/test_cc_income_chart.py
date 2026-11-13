@@ -176,13 +176,13 @@ const document={getElementById:id=>nodes[id]};
 renderCCDailyPnl([],null);
 assert.strictEqual(nodes['kpi-daily-value'].textContent,'$100.00');
 assert(nodes['kpi-daily-label'].textContent.includes('partial'));
-assert(nodes['kpi-daily-pct'].textContent.includes('Stocks $100.00'));
-assert(nodes['kpi-daily-pct'].textContent.includes('options unavailable'));
+assert(nodes['kpi-daily-status'].textContent.includes('Stocks $100.00'));
+assert(nodes['kpi-daily-status'].textContent.includes('options unavailable'));
 const report={session:'2026-10-13',complete:false,options_pnl:null,partial_options_pnl:-50.5,priced_count:6,open_count:7};
 renderCCDailyPnl([],report);
-assert(nodes['kpi-daily-pct'].textContent.includes('6/7 open calls'));
+assert(nodes['kpi-daily-status'].textContent.includes('6/7 open calls'));
 assert.strictEqual(nodes['kpi-daily-value'].textContent,'$49.50');
-assert(nodes['kpi-daily-pct'].textContent.includes('options −$50.50 known'));
+assert(nodes['kpi-daily-status'].textContent.includes('options −$50.50 known'));
 assert(nodes['kpi-daily-status'].textContent.includes('1 open calls missing daily P&L'));
 renderCCDailyPnl([],{...report,session:'2026-10-12',complete:true,options_pnl:-25});
 assert.strictEqual(nodes['kpi-daily-value'].textContent,'$100.00');
@@ -191,7 +191,7 @@ renderCCDailyPnl([],{...report,complete:false,closed_this_session:1});
 assert(nodes['kpi-daily-status'].textContent.includes('excludes 1 calls closed'));
 renderCCDailyPnl([],{...report,partial_options_pnl:0});
 assert.strictEqual(nodes['kpi-daily-value'].textContent,'$100.00');
-assert(nodes['kpi-daily-pct'].textContent.includes('options $0.00 known'));
+assert(nodes['kpi-daily-status'].textContent.includes('options $0.00 known'));
 nodes['kpi-daily-value'].dataset.stockChg='unavailable';
 renderCCDailyPnl([],null);
 assert.strictEqual(nodes['kpi-daily-value'].textContent,'—');
@@ -210,10 +210,38 @@ const report={session:'2026-10-13',complete:true,options_pnl:-25,priced_count:7,
 renderCCDailyPnl([],report);
 assert.strictEqual(nodes['kpi-daily-value'].textContent,'$75.00');
 assert(nodes['kpi-daily-label'].textContent.includes('estimate'));
-assert(nodes['kpi-daily-pct'].textContent.includes('options −$25.00'));
+assert(nodes['kpi-daily-status'].textContent.includes('options −$25.00'));
 assert(nodes['kpi-daily-status'].textContent.includes('not reconciled to brokerage'));
 renderCCDailyPnl([],{...report,options_pnl:0});
 assert.strictEqual(nodes['kpi-daily-value'].textContent,'$100.00');
 renderCCDailyPnl([],{...report,options_pnl:-150});
 assert.strictEqual(nodes['kpi-daily-value'].textContent,'−$50.00');
+''')
+
+
+def test_daily_percentage_uses_matching_prior_capital_and_details_stay_in_accordion():
+    run_js(r'''
+const nodes={
+ 'kpi-daily-value':{dataset:{stockChg:'100',stockSession:'2026-10-13',prevTotal:'10000'},style:{}},
+ 'kpi-daily-label':{},'kpi-daily-pct':{},'kpi-daily-status':{}
+};
+const document={getElementById:id=>nodes[id]};
+const report={session:'2026-10-13',complete:true,options_pnl:-25,priced_count:1,open_count:1,previous_liability:500};
+renderCCDailyPnl([],report);
+assert.equal(nodes['kpi-daily-value'].textContent,'$75.00');
+assert.equal(nodes['kpi-daily-pct'].textContent,'+0.79%');
+assert(!nodes['kpi-daily-pct'].textContent.includes('Stocks'));
+assert(nodes['kpi-daily-status'].textContent.includes('Stocks $100.00 · options −$25.00'));
+renderCCDailyPnl([],{...report,complete:false,options_pnl:null,partial_options_pnl:-150,partial_previous_liability:500});
+assert.equal(nodes['kpi-daily-value'].textContent,'−$50.00');
+assert.equal(nodes['kpi-daily-pct'].textContent,'-0.53%');
+assert(nodes['kpi-daily-label'].textContent.includes('partial'));
+renderCCDailyPnl([],null);
+assert.equal(nodes['kpi-daily-pct'].textContent,'+1.00%'); // Known stock contribution only.
+renderCCDailyPnl([],{...report,previous_liability:null});
+assert.equal(nodes['kpi-daily-pct'].textContent,'—'); // Do not invent a net denominator.
+renderCCDailyPnl([],{...report,previous_liability:11000});
+assert.equal(nodes['kpi-daily-pct'].textContent,'—');
+renderCCDailyPnl([],{...report,options_pnl:-100});
+assert.equal(nodes['kpi-daily-pct'].textContent,'+0.00%');
 ''')

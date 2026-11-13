@@ -184,3 +184,17 @@ def test_network_fetch_does_not_hold_a_database_write_lock(tmp_path):
 def test_observed_spread_does_not_require_a_recent_trade(last_trade):
     r=record();q=json.loads(r['quote_json']);q['last_trade_at']=last_trade;r['quote_json']=json.dumps(q)
     assert pnl.position_daily_pnl(POSITION,r,NOW)['pnl_day']==-151.50
+
+
+def test_percentage_baseline_covers_exactly_the_positions_in_known_daily_change(tmp_path):
+    path, conn = db(tmp_path)
+    pnl.save_quote(conn, POSITION, '2026-10-13', json.loads(record()['quote_json']), 11.41, NOW.isoformat())
+    positions = [dict(POSITION), dict(POSITION, id=2)]
+    report = pnl.annotate_positions(conn, positions, NOW)
+    assert report['previous_liability'] is None
+    assert report['partial_previous_liability'] == 1141.0
+    assert positions[1]['pnl_day_previous_liability'] is None
+    report = pnl.annotate_positions(conn, [dict(POSITION)], NOW)
+    assert report['previous_liability'] == 1141.0
+    assert report['partial_options_pnl'] == -151.50
+    conn.close()

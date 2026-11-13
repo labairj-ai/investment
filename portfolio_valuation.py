@@ -6,6 +6,7 @@ Legacy current_mark values alone are never sufficient evidence.
 import json
 import math
 import sqlite3
+import re
 from datetime import date, datetime, time, timedelta
 
 from covered_call_daily_pnl import (
@@ -29,7 +30,13 @@ def verified_mark(position, record, session, now):
     # A previous-close failure affects daily P&L, not a valid current midpoint.
     if quote.get('error') not in (None, 'PREVIOUS_CLOSE_UNAVAILABLE'):
         raise ValueError(quote['error'])
-    if mark is None or quote.get('source') != SOURCE:
+    from cc_broker_quotes import SOURCE as BROKER_SOURCE
+    broker = quote.get('source') == BROKER_SOURCE
+    if broker and (quote.get('mark_basis') != 'BID_ASK_MIDPOINT' or
+                   not re.fullmatch('[a-f0-9]{64}', str(quote.get('evidence_sha256', ''))) or
+                   parse_timestamp(quote.get('quoted_at')) != parse_timestamp(record['observed_at'])):
+        raise ValueError('INVALID_BROKER_EVIDENCE')
+    if mark is None or quote.get('source') not in {SOURCE, BROKER_SOURCE}:
         raise ValueError('INVALID_OPTION_QUOTE')
     if quote.get('mark_basis') == 'BID_ASK_MIDPOINT':
         bid, ask = number(quote.get('bid')), number(quote.get('ask'))
@@ -48,6 +55,8 @@ def verified_mark(position, record, session, now):
     closed = datetime.combine(day, session_close_time(day), TZ_EASTERN)
     reference = min(now, closed)
     observed = parse_timestamp(record['observed_at'])
+    if broker and not opened <= observed <= closed:
+        raise ValueError('BROKER_QUOTE_OUTSIDE_SESSION')
     if observed < opened or observed > now + timedelta(seconds=5) or (reference-observed).total_seconds() > MAX_TRADE_LAG_SECONDS:
         raise ValueError('STALE_OPTION_QUOTE')
     if now < closed:
@@ -75,7 +84,7 @@ def quote_records(conn, session=None):
     return records
 
 
-def value_portfolio(conn, gross_value, stock_session, now=None):
+def value_portfolio(conn, gross_value, stock_session, now=None, *, broker_quotes=()):
     """No migrations, writes, network calls, or fallback to entry premiums."""
     now = now or now_utc()
     gross_value = number(gross_value)
@@ -94,7 +103,7 @@ def value_portfolio(conn, gross_value, stock_session, now=None):
                   complete=False, session=session, stock_session=stock_session,
                   stock_snapshot_day=snapshot_day,
                   open_count=0, priced_count=0, issues=[], observations=[],
-                  reconciled_to_broker=False, source=SOURCE, valid_until=None)
+                  reconciled_to_broker=False, source=SOURCE, valid_until=None, broker_quote_positions=[])
     if number(gross_value) is None:
         result['issues'].append('INVALID_STOCK_VALUE')
     if stock_session != session:
@@ -105,7 +114,9 @@ def value_portfolio(conn, gross_value, stock_session, now=None):
         positions = [dict(zip(columns, row)) for row in cur]
         result['open_count'] = len(positions)
         records = {}
-        for r in quote_records(conn,session):
+        for r in [*quote_records(conn, session), *broker_quotes]:
+            if r.get('session') != session:
+                continue
             records.setdefault(r['position_id'], []).append(r)
         liability = 0.0
         deadlines = []
@@ -113,7 +124,8 @@ def value_portfolio(conn, gross_value, stock_session, now=None):
             def priority(record):
                 try:
                     q = json.loads(record['quote_json'])
-                    return (0 if q.get('mark_basis')=='PROVIDER_MARK' else 1,
+                    return (2 if q.get('source') != SOURCE else
+                            0 if q.get('mark_basis') == 'PROVIDER_MARK' else 1,
                             -parse_timestamp(record['observed_at']).timestamp())
                 except (ValueError,TypeError,AttributeError):
                     return (2,0)
@@ -126,6 +138,8 @@ def value_portfolio(conn, gross_value, stock_session, now=None):
                     result['observations'].append(observed)
                     deadlines.append(deadline)
                     result['priced_count'] += 1
+                    if json.loads(record['quote_json']).get('source') != SOURCE:
+                        result['broker_quote_positions'].append(f"{position['ticker']} #{position['id']}")
                     break
                 except (ValueError, TypeError, KeyError, OverflowError) as error:
                     issue = str(error)
