@@ -100,7 +100,8 @@ def value_portfolio(conn, gross_value, stock_session, now=None, *, broker_quotes
     except (TypeError,ValueError):
         stock_session = None
     result = dict(gross_stock_value=gross_value, net_value=None, call_liability=None,
-                  complete=False, session=session, stock_session=stock_session,
+                  complete=False, known_call_liability=None, partial_net_value=None, priced_calls=[],
+                  session=session, stock_session=stock_session,
                   stock_snapshot_day=snapshot_day,
                   open_count=0, priced_count=0, issues=[], observations=[],
                   reconciled_to_broker=False, source=SOURCE, valid_until=None, broker_quote_positions=[])
@@ -138,6 +139,9 @@ def value_portfolio(conn, gross_value, stock_session, now=None, *, broker_quotes
                     result['observations'].append(observed)
                     deadlines.append(deadline)
                     result['priced_count'] += 1
+                    result['priced_calls'].append(dict(position_id=position['id'], ticker=position['ticker'],
+                        contracts=position['contracts'], liability=round(value, 2),
+                        observed_at=observed, valid_until=deadline))
                     if json.loads(record['quote_json']).get('source') != SOURCE:
                         result['broker_quote_positions'].append(f"{position['ticker']} #{position['id']}")
                     break
@@ -145,6 +149,9 @@ def value_portfolio(conn, gross_value, stock_session, now=None, *, broker_quotes
                     issue = str(error)
             else:
                 result['issues'].append(f"{position['ticker']} #{position['id']}: {issue}")
+        result.update(known_call_liability=round(liability, 2),
+                      partial_net_value=round(gross_value-liability, 2) if gross_value is not None else None,
+                      valid_until=min(deadlines, key=parse_timestamp) if deadlines else None)
         if not result['issues']:
             result.update(complete=True, call_liability=round(liability, 2),
                           net_value=round(gross_value-liability, 2),
