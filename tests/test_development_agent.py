@@ -201,12 +201,12 @@ def test_scout_read_only_dedup_diversity(repo,store):
     a=store.discover(found["proposals"][0]); assert store.discover(found["proposals"][0])==a
 
 
-def test_architecture_cycles_no_size_only(repo):
+def test_architecture_does_not_promote_static_cycles_or_handler_counts(repo):
     (repo/"a.py").write_text("import b\n");(repo/"b.py").write_text("import a\n")
-    (repo/"large.py").write_text("# intentional line\n"*1600)
+    (repo/"large.py").write_text("try:\n    pass\nexcept ValueError:\n    pass\n"*11 + "# FIXME: Repeated debt marker without demonstrated failure\n"*1600)
     commit(repo)  # Architecture discovery now consumes reviewed Git blobs.
     found=discovery.architecture_signals(repo)
-    assert len(found)==1 and found[0]["category"]=="CONSOLIDATE"
+    assert found == []
 
 
 @pytest.mark.parametrize("clock,expected",[("2026-03-08T04:59:00+00:00","2026-03-07"),("2026-03-08T07:01:00+00:00","2026-03-08"),("2026-11-01T05:30:00+00:00","2026-11-01"),("2026-11-01T06:30:00+00:00","2026-11-01")])
@@ -614,3 +614,35 @@ def test_candidate_closure_requires_observed_outcome(repo,store):
         store._append(db,cid,"DEPLOYMENT",{"status":"HEALTHY","deployed_sha":ctx["head"]},"fixture-observed")
     store.review_decision(cid,"OUTCOME_ACCEPTANCE","accept","human",ctx,"accepted","Verified observation window and accepted outcome")
     assert store.get(cid)["state"]=="CLOSED"
+
+
+@pytest.mark.parametrize("state", ["DISCOVERED", "DEFERRED", "REJECTED", "DEPLOYED", "CLOSED"])
+@pytest.mark.parametrize("source", ["todo", "architecture"])
+def test_static_finding_movement_reuses_legacy_candidate_without_rewriting_history(store, state, source):
+    original = proposal(source=source, evidence=["a"*40+":docs/note.md:10:helper"], files=["docs/note.md", "example.py"])
+    cid = store.discover(original)
+    with store.connect(True) as db:
+        store._append(db, cid, "STATE", dict(state=state), "fixture-state:"+state)
+    before = store.get(cid)
+    moved = dict(original, files=list(reversed(original["files"])), evidence=["b"*40+":docs/note.md:40:helper"])
+    assert store.discover(moved) == cid
+    assert store.get(cid) == before
+    assert len(store.list()) == 1
+    assert store.discover(dict(moved, problem="A distinct demonstrated problem")) != cid
+    assert store.discover(dict(moved, evidence=["docs/note.md:40:different_helper"])) != cid
+
+
+def test_scheduler_suppresses_reviewed_marker_after_commit_and_line_movement(repo, store):
+    (repo/"example.py").write_text("# FIXME: Reject malformed input before parsing\n")
+    commit(repo)
+    first = scheduler.discover_daily(repo, store, now=datetime(2026,11,13,12,tzinfo=timezone.utc))
+    cid = first["candidates"][0]
+    store.transition(cid, "DEFERRED")
+    before = store.get(cid)
+    (repo/"example.py").write_text("# unrelated change\n# FIXME: Reject malformed input before parsing\n# FIXME: Handle a different verified input defect\n")
+    commit(repo)
+    second = scheduler.discover_daily(repo, store, now=datetime(2026,11,14,12,tzinfo=timezone.utc))
+    assert second["status"] == "COLLECTED" and second["created"] == 1
+    assert cid not in second["candidates"]
+    assert store.get(cid) == before
+    assert store.get(second["candidates"][0])["problem"] == "Handle a different verified input defect"

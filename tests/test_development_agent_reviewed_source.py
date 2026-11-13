@@ -50,8 +50,9 @@ def test_untracked_architecture_source_and_context_cannot_change_scout(repo):
 
 def test_committed_source_changes_architecture_and_todo_analysis(repo):
     before=discovery.architecture_signals(repo)
-    add(repo,'a.py','import b\n# FIXME: Handle malformed reviewed source explicitly\n')
-    add(repo,'b.py','import a\n')
+    body='def duplicate():\n'+''.join(f'    a{i} = {i}\n' for i in range(6))
+    add(repo,'a.py',body+'# FIXME: Handle malformed reviewed source explicitly\n')
+    add(repo,'b.py',body)
     # Files on disk alone have no production-discovery authority.
     assert discovery.architecture_signals(repo)==before
     head=commit(repo)
@@ -67,7 +68,7 @@ def test_duplicate_exception_and_debt_analysis_use_same_blobs(repo):
     add(repo,'large.py',large);head=commit(repo)
     before=discovery.architecture_signals(repo)
     assert any(x['files']==['one.py','two.py'] for x in before)
-    assert any(x['files']==['large.py'] for x in before)
+    assert not any(x['files']==['large.py'] for x in before)
     add(repo,'one.py','# changed only working tree\n');add(repo,'large.py','')
     assert discovery.architecture_signals(repo)==before
     assert rs.reviewed_sources(repo,head).texts['one.py']==text

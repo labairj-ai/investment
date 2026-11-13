@@ -67,7 +67,7 @@ def ingest(store,signals,*,suppressions=None):
                 cid=candidate['id'];deduplicated+=1
             else:
                 closed=max(e['created'] for e in candidate['events'] if e['kind']=='STATE')
-                if item['observed_at']<=closed:suppressed+=1;continue
+                if item['observed_at']<=closed or (item['source']=='ci' and item['evidence_location']==previous['evidence_location']):suppressed+=1;continue
                 item=dict(item,evidence=item['evidence']+['recurrence-after:'+str(closed)]);cid=store.discover(item)
         else:cid=store.discover(item)
         store.event(cid,'SIGNAL_OBSERVATION',dict(signal_id=item['signal_id'],candidate=cid,source=item['source'],observed_at=item['observed_at'],evidence_location=item['evidence_location'],recurrence=(previous.get('recurrence',0) if previous else 0)+item['recurrence'],confidence=item['confidence'],synthetic=item['synthetic']))
