@@ -3,6 +3,9 @@ function portfolioValueForDisplay(data) {
   if (data.valuation?.complete !== false && Number.isFinite(data.totalValue)) {
     return {value:data.totalValue, basis:'NET'};
   }
+  if (Number.isFinite(data.valuation?.partial_net_value) && Number.isFinite(data.grossStockValue)) {
+    return {value:data.valuation.partial_net_value, basis:'PARTIAL'};
+  }
   if (Number.isFinite(data.grossStockValue)) {
     return {value:data.grossStockValue, basis:'GROSS'};
   }
@@ -16,9 +19,13 @@ function renderPortfolioValue(data) {
   const gross = document.getElementById('kpi-gross-value');
   const money = n => n.toLocaleString('en-US',{style:'currency',currency:'USD'});
   if (value) value.textContent = display.value === null ? 'Unavailable' : money(display.value);
-  if (label) label.textContent = display.basis === 'GROSS'
+  if (label) label.textContent = display.basis === 'PARTIAL'
+    ? 'Tracked value · '+data.valuation.priced_count+'/'+data.valuation.open_count+' calls priced'
+    : display.basis === 'GROSS'
     ? 'Stock value · option adjustment incomplete' : 'Tracked Net Value · estimate';
-  if (gross) gross.textContent = display.basis === 'GROSS'
+  if (gross && Number.isFinite(data.valuation?.known_call_liability)) {
+    gross.textContent = 'Stocks '+(Number.isFinite(data.grossStockValue) ? money(data.grossStockValue) : 'unavailable')+' · Known CC liability '+money(data.valuation.known_call_liability);
+  } else if (gross) gross.textContent = display.basis === 'GROSS'
     ? 'Gross stocks · open-call liability unavailable'
     : 'Gross stocks '+(Number.isFinite(data.grossStockValue) ? money(data.grossStockValue) : 'unavailable');
   return display;
@@ -27,15 +34,27 @@ function renderPortfolioValue(data) {
 // A generated snapshot must stop presenting a complete value when quotes age out.
 function expirePortfolioValuation(data, now) {
   const report = data.valuation;
-  if (!report || !report.complete || !report.valid_until) return false;
+  if (!report || !report.valid_until) return false;
   const deadline = Date.parse(report.valid_until);
   if (!Number.isFinite(deadline) || now >= deadline) {
     report.complete = false;
     report.net_value = null;
     data.totalValue = null;
+    // Retain every independently fresh call; one expired quote cannot erase the others.
+    if (Array.isArray(report.priced_calls)) {
+      report.priced_calls = report.priced_calls.filter(call=>Number.isFinite(call.liability) && now < Date.parse(call.valid_until));
+      report.priced_count = report.priced_calls.length;
+      report.known_call_liability = Math.round(report.priced_calls.reduce((sum,call)=>sum+call.liability,0)*100)/100;
+      report.partial_net_value = Number.isFinite(data.grossStockValue) ? Math.round((data.grossStockValue-report.known_call_liability)*100)/100 : null;
+      report.valid_until = report.priced_calls.length ? report.priced_calls.reduce((a,b)=>Date.parse(a.valid_until)<Date.parse(b.valid_until)?a:b).valid_until : null;
+    } else {
+      report.partial_net_value = null;
+      report.known_call_liability = null;
+      report.valid_until = null;
+    }
     renderPortfolioValue(data);
     const status = document.getElementById('kpi-net-status');
-    if (status) status.textContent = 'Option quotes have expired. Waiting for a fresh pricing snapshot. Showing the gross stock snapshot while the option adjustment is incomplete; cash and untracked instruments are excluded.';
+    if (status) status.textContent = 'Expired quotes excluded; '+report.priced_count+'/'+report.open_count+' open calls priced. Stocks minus the available call values are shown; missing liabilities, cash and untracked instruments are excluded.';
     return true;
   }
   return false;
@@ -50,6 +69,11 @@ function applyPortfolioValuation(data, report, now) {
       report.open_count < 0 || report.priced_count < 0 || report.priced_count > report.open_count ||
       (report.complete && (!Number.isFinite(report.gross_stock_value) || report.priced_count !== report.open_count)) ||
       (report.complete && report.open_count > 0 && !Number.isFinite(Date.parse(report.valid_until))) ||
+      (report.known_call_liability != null && (!Number.isFinite(report.known_call_liability) || report.known_call_liability < 0)) ||
+      (report.partial_net_value != null && (!Number.isFinite(report.partial_net_value) || !Number.isFinite(report.known_call_liability) ||
+        !Number.isFinite(report.gross_stock_value) || Math.abs(report.partial_net_value-(report.gross_stock_value-report.known_call_liability)) > 0.011)) ||
+      (report.priced_calls && (!Array.isArray(report.priced_calls) || report.priced_calls.length !== report.priced_count ||
+        report.priced_calls.some(call=>!call || !Number.isFinite(call.liability) || call.liability < 0 || !Number.isFinite(Date.parse(call.valid_until))))) ||
       (report.issues && (!Array.isArray(report.issues) || report.issues.some(v=>typeof v !== 'string'))) ||
       (report.observations && (!Array.isArray(report.observations) || report.observations.some(v=>typeof v !== 'string')))) return false;
   data.valuation = report;
@@ -61,6 +85,7 @@ function applyPortfolioValuation(data, report, now) {
     const notes = [report.priced_count+'/'+report.open_count+' open calls priced', 'session '+report.session,
       'Reported mark when available; otherwise bid/ask midpoint estimate. Cash and untracked instruments excluded.'];
     if (Array.isArray(report.broker_quote_positions) && report.broker_quote_positions.length) notes.push('User-supplied broker midpoint: '+report.broker_quote_positions.join(', ')+'. Dated quote; normal freshness limits apply.');
+    if (Array.isArray(report.priced_calls)) notes.push(...report.priced_calls.map(call=>call.ticker+' #'+call.position_id+': $'+call.liability.toFixed(2)));
     if (report.observations && report.observations.length) notes.push('Quotes observed '+[...new Set(report.observations)].join(', '));
     if (!report.complete && report.issues) {
       notes.push(report.issues.join('; '));

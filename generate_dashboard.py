@@ -1361,19 +1361,28 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     finally:
         _valuation_conn.close()
     total_v = valuation["net_value"]
-    display_v = total_v if total_v is not None else valuation["gross_stock_value"]
+    display_v = total_v if total_v is not None else valuation["partial_net_value"]
+    if display_v is None:
+        display_v = valuation["gross_stock_value"]
     display_pct = min(100., max(0., display_v / 2_000_000 * 100)) if display_v is not None else 0.
-    display_basis = 'current · tracked net estimate' if total_v is not None else 'stock value · option adjustment incomplete'
+    coverage = f"{valuation['priced_count']}/{valuation['open_count']} calls priced"
+    partial_value = total_v is None and valuation['partial_net_value'] is not None
+    display_label = 'Tracked Net Value · estimate' if total_v is not None else (f'Tracked value · {coverage}' if partial_value else 'Stock value · option adjustment incomplete')
+    display_basis = 'current · tracked net estimate' if total_v is not None else (f'partial net estimate · {coverage}' if partial_value else 'stock value · option adjustment incomplete')
+    display_components = f'Stocks ${total_value_csv:,.2f}'
+    if valuation['known_call_liability'] is not None:
+        display_components += f" · Known CC liability ${valuation['known_call_liability']:,.2f}"
     valuation_note = (
         f"{valuation['priced_count']}/{valuation['open_count']} open calls priced · "
         f"session {valuation['session']}. "
         + (f"Call liability {money(valuation['call_liability'])}. " if valuation['complete'] else
-           "Net value unavailable: " + "; ".join(valuation['issues']) + ". ")
+           "Partial estimate excludes unpriced liabilities: " + "; ".join(valuation['issues']) + ". ")
         + "Estimate excludes cash and untracked instruments."
         + " Uses a reported mark when available, otherwise bid/ask midpoint."
         + (" Quotes observed " + ", ".join(sorted(set(valuation['observations']))) + "."
            if valuation['observations'] else "")
     )
+    valuation_note += ' ' + '; '.join(f"{call['ticker']} #{call['position_id']}: ${call['liability']:,.2f}" for call in valuation['priced_calls'])
     if not valuation['complete'] and any('QUOTE' in issue for issue in valuation['issues']):
         valuation_note += ' Missing feed coverage can be filled with a dated broker bid/ask quote for the exact contract.'
     if valuation['broker_quote_positions']:
@@ -2877,9 +2886,9 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
   <!-- KPI row -->
   <div class="kpi-row">
     <div class="kpi">
-      <div class="label" id="kpi-net-label">{'Tracked Net Value · estimate' if total_v is not None else 'Stock value · option adjustment incomplete'}</div>
+      <div class="label" id="kpi-net-label">{_html.escape(display_label)}</div>
       <div class="value" id="kpi-net-value">{f'${display_v:,.2f}' if display_v is not None else "Unavailable"}</div>
-      <div class="sub" id="kpi-gross-value">{'Gross stocks '+money(total_value_csv) if total_v is not None else 'Gross stocks · open-call liability unavailable'}</div>
+      <div class="sub" id="kpi-gross-value">{_html.escape(display_components)}</div>
       <details style="font-size:11px;line-height:1.5;margin-top:5px;"><summary>Sources &amp; coverage</summary><div id="kpi-net-status">{_html.escape(valuation_note)}</div></details>
     </div>
     <div class="kpi">
@@ -4332,7 +4341,9 @@ function renderGoalsCard() {{
   const pvEl = document.getElementById("goal-port-value");
   if (pvEl) pvEl.textContent = portAvailable ? fmt$(portVal) : "—";
   const basisEl = document.getElementById("goal-port-basis");
-  if (basisEl) basisEl.textContent = portDisplay.basis === 'GROSS'
+  if (basisEl) basisEl.textContent = portDisplay.basis === 'PARTIAL'
+    ? 'partial net estimate · '+D.valuation.priced_count+'/'+D.valuation.open_count+' calls priced'
+    : portDisplay.basis === 'GROSS'
     ? 'stock value · option adjustment incomplete' : 'current · tracked net estimate';
   const pbEl = document.getElementById("goal-port-bar");
   if (pbEl) pbEl.style.width = portPct + "%";

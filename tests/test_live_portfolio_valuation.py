@@ -147,3 +147,40 @@ assert(applyPortfolioValuation(data,{...missing,gross_stock_value:null},now));
 assert.equal(nodes['kpi-net-value'].textContent,'Unavailable');
 assert.equal(portfolioValueForDisplay(data).value,null);
 ''')
+
+
+def test_partial_call_subtotal_survives_a_missing_quote_and_individual_expiry():
+    node('''
+const partial={...report,complete:false,net_value:null,open_count:3,priced_count:2,
+ known_call_liability:1100,partial_net_value:8900,issues:['MISSING #3: MISSING_QUOTE'],
+ valid_until:'2026-11-05T16:35:00Z',priced_calls:[
+ {position_id:1,ticker:'ONE',liability:900,valid_until:'2026-11-05T16:35:00Z'},
+ {position_id:2,ticker:'TWO',liability:200,valid_until:'2026-11-05T17:00:00Z'}]};
+assert(applyPortfolioValuation(data,partial,now));
+assert.deepEqual(portfolioValueForDisplay(data),{value:8900,basis:'PARTIAL'});
+assert.equal(nodes['kpi-net-value'].textContent,'$8,900.00');
+assert.equal(nodes['kpi-net-label'].textContent,'Tracked value · 2/3 calls priced');
+assert(nodes['kpi-gross-value'].textContent.includes('Known CC liability $1,100.00'));
+assert(nodes['kpi-net-status'].textContent.includes('ONE #1: $900.00'));
+assert(nodes['kpi-net-status'].textContent.includes('TWO #2: $200.00'));
+assert.equal(data.totalValue,null);
+assert(expirePortfolioValuation(data,Date.parse('2026-11-05T16:36:00Z')));
+assert.equal(data.valuation.known_call_liability,200);
+assert.equal(data.valuation.priced_count,1);
+assert.equal(nodes['kpi-net-value'].textContent,'$9,800.00');
+assert.equal(nodes['kpi-net-label'].textContent,'Tracked value · 1/3 calls priced');
+assert.equal(data.totalValue,null);
+assert(expirePortfolioValuation(data,Date.parse('2026-11-05T17:01:00Z')));
+assert.equal(nodes['kpi-net-value'].textContent,'$10,000.00');
+assert.equal(data.valuation.priced_count,0);
+''')
+
+
+def test_known_call_values_remain_visible_when_stock_value_is_unavailable():
+    node('''
+const partial={...report,complete:false,net_value:null,gross_stock_value:null,
+ known_call_liability:900,partial_net_value:null};
+assert(applyPortfolioValuation(data,partial,now));
+assert.equal(nodes['kpi-net-value'].textContent,'Unavailable');
+assert.equal(nodes['kpi-gross-value'].textContent,'Stocks unavailable · Known CC liability $900.00');
+''')

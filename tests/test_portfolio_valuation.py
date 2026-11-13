@@ -61,13 +61,19 @@ def test_missing_failed_or_stale_quotes_cannot_become_zero_liabilities(mutation,
     assert reason in ' '.join(result['issues'])
 
 
-def test_one_missing_call_invalidates_entire_net_not_just_missing_contract():
+def test_one_missing_call_retains_every_known_liability_for_partial_display():
     conn = fixture()
     conn.execute("INSERT INTO cc_positions VALUES (2,'MISSING',1,100,'2026-12-18','2026-11-04','open',NULL)")
     result = value_portfolio(conn, 10000., SESSION, NOW)
     assert result['priced_count'] == 1
     assert result['open_count'] == 2
     assert result['net_value'] is None
+    assert result['call_liability'] is None
+    assert result['known_call_liability'] == 900.
+    assert result['partial_net_value'] == 9100.
+    assert result['priced_calls'][0]['ticker'] == 'TEST'
+    assert result['priced_calls'][0]['liability'] == 900.
+    assert 'MISSING #2' in result['issues'][0]
 
 
 def test_stock_session_and_missing_schema_fail_closed_but_empty_book_is_valid():
@@ -112,7 +118,7 @@ if (d.totalValue !== null || d.valuation.net_value !== null || nodes['kpi-net-va
     subprocess.run(['node', '-e', js], check=True, capture_output=True, text=True)
 
 
-@pytest.mark.parametrize("complete", [False, True])
+@pytest.mark.parametrize("complete", [False, True, "partial"])
 def test_dashboard_fixture_uses_shared_nullable_net_and_emits_valid_javascript(tmp_path, monkeypatch, mem_db, complete):
     import re
     import generate_dashboard as dashboard
@@ -128,12 +134,17 @@ def test_dashboard_fixture_uses_shared_nullable_net_and_emits_valid_javascript(t
         source_conn = fixture()
         with sqlite3.connect(mem_db) as target:
             target.executescript('\n'.join(source_conn.iterdump()))
+            if complete == 'partial':
+                target.execute("INSERT INTO cc_positions VALUES (2,'MISSING',1,100,'2026-12-18','2026-11-04','open',NULL)")
     page = dashboard.build_dashboard([dict(day=SESSION, total_value=10000., total_change_dollars=0., total_change_pct=0., spy_change_pct=0.)], [], [])
     assert ('id="kpi-net-value">$9,100.00' if complete else 'id="kpi-net-value">$10,000.00') in page
-    assert ('"totalValue": 9100.0' if complete else '"totalValue": null') in page
+    assert ('"totalValue": 9100.0' if complete is True else '"totalValue": null') in page
     assert '"grossStockValue": 10000.0' in page
     assert ('>$9,100</span>' if complete else '>$10,000</span>') in page
-    assert ('current · tracked net estimate' if complete else 'Stock value · option adjustment incomplete') in page
+    assert ('Tracked value · 1/2 calls priced' if complete == 'partial' else ('current · tracked net estimate' if complete else 'Stock value · option adjustment incomplete')) in page
+    if complete == 'partial':
+        assert 'Stocks $10,000.00 · Known CC liability $900.00' in page
+        assert 'partial net estimate · 1/2 calls priced' in page
     assert 'Stocks vs SPY' in page
     assert 'Tracked Net Value — History' not in page
     assert 'net-value-history' not in page
@@ -215,5 +226,27 @@ if (!nodes['goal-port-basis'].textContent.includes('option adjustment incomplete
 if (D.totalValue !== null) throw Error('invented net value');
 if (goals.includes('deploy ~$0')) throw Error('fabricated zero capital recommendation');
 if (nodes['goal-port-pct'].textContent !== '0.5% of $2M target') throw Error('incorrect stock target progress');
+D.valuation={complete:false,partial_net_value:8900,known_call_liability:1100,priced_count:2,open_count:3};
+renderGoalsCard();
+if (nodes['goal-port-value'].textContent !== '$8,900') throw Error('partial goal did not subtract known calls');
+if (nodes['goal-port-basis'].textContent !== 'partial net estimate · 2/3 calls priced') throw Error('missing partial basis');
+if (D.totalValue !== null) throw Error('invented complete net');
+
 '''
     subprocess.run(['node','-e',js], check=True, capture_output=True, text=True)
+
+
+def test_multiple_priced_calls_are_summed_once_while_missing_call_stays_unknown():
+    conn = fixture()
+    second = dict(POSITION, id=2, ticker='SECOND', contracts=3)
+    conn.execute('INSERT INTO cc_positions VALUES (?,?,?,?,?,?,?,?)', tuple(second.values()))
+    conn.execute("INSERT INTO cc_positions VALUES (3,'MISSING',1,100,'2026-12-18','2026-11-04','open',NULL)")
+    pnl.save_quote(conn, second, SESSION, dict(mark=2.,source=pnl.SOURCE), None, NOW.isoformat())
+    before = conn.total_changes
+    result = value_portfolio(conn, 10000., SESSION, NOW)
+    assert result['known_call_liability'] == 1500.
+    assert result['partial_net_value'] == 8500.
+    assert result['priced_count'] == 2 and result['open_count'] == 3
+    assert [call['liability'] for call in result['priced_calls']] == [900.,600.]
+    assert result['call_liability'] is None and result['net_value'] is None
+    assert conn.total_changes == before
