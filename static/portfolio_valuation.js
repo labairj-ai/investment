@@ -24,7 +24,7 @@ function renderPortfolioValue(data) {
     : display.basis === 'GROSS'
     ? 'Stock value · option adjustment incomplete' : 'Tracked Net Value · estimate';
   if (gross && Number.isFinite(data.valuation?.known_call_liability)) {
-    gross.textContent = 'Stocks '+money(data.grossStockValue)+' · Known CC liability '+money(data.valuation.known_call_liability);
+    gross.textContent = 'Stocks '+(Number.isFinite(data.grossStockValue) ? money(data.grossStockValue) : 'unavailable')+' · Known CC liability '+money(data.valuation.known_call_liability);
   } else if (gross) gross.textContent = display.basis === 'GROSS'
     ? 'Gross stocks · open-call liability unavailable'
     : 'Gross stocks '+(Number.isFinite(data.grossStockValue) ? money(data.grossStockValue) : 'unavailable');

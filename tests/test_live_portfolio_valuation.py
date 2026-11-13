@@ -174,3 +174,13 @@ assert(expirePortfolioValuation(data,Date.parse('2026-11-05T17:01:00Z')));
 assert.equal(nodes['kpi-net-value'].textContent,'$10,000.00');
 assert.equal(data.valuation.priced_count,0);
 ''')
+
+
+def test_known_call_values_remain_visible_when_stock_value_is_unavailable():
+    node('''
+const partial={...report,complete:false,net_value:null,gross_stock_value:null,
+ known_call_liability:900,partial_net_value:null};
+assert(applyPortfolioValuation(data,partial,now));
+assert.equal(nodes['kpi-net-value'].textContent,'Unavailable');
+assert.equal(nodes['kpi-gross-value'].textContent,'Stocks unavailable · Known CC liability $900.00');
+''')
