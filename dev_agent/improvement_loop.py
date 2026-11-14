@@ -55,6 +55,8 @@ def supervised_admission(root,store,client,*,now=None):
     if snapshot.get('status')!='PASS' or not 0<=now-snapshot.get('backup_timestamp',0)<=min(24,cfg.get('snapshot_max_age_hours',24))*3600:raise ValueError('protected-state backup is unavailable')
     scheduler=acceptance(store,git(root,'rev-parse','HEAD'),now)
     if scheduler['status']!='READY':raise ValueError('discovery service has not completed acceptance')
+    from .watchdog_gate import require_coverage
+    require_coverage(root,now=now)
     require_completed(root)
     current(root,store)
     from datetime import datetime
@@ -124,6 +126,9 @@ def cycle(root,store,builder,reviewer,validator,client):
             def ready():
                 import os
                 live=json.loads((root/'config/development_agent.json').read_text())
+                from .watchdog_gate import require_coverage
+                try:require_coverage(root)
+                except ValueError:return False
                 return (live.get('supervised_loop_enabled') is True and not live.get('emergency_stop') and os.environ.get('DEV_AGENT_KILL_SWITCH','').lower() in {'','0','false'}
                         and digest(current(root,store))==admission['policy_hash'] and technical_current(root,certificates(store)) and client.protections().get('status')=='PASS')
             result=Runner(store,builder,reviewer,validator).run(cid,context,manager,tree,[('focused_tests',['python','-m','pytest',*pending['focused_tests'],'-q'])],certification=ready,protections=client.protections(),mode='SUPERVISED')
