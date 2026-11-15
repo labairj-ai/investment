@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .macro_provenance import DIMS, ET, accepted_contract, canonical, digest
 
-PROTOCOL_PATH = Path(__file__).resolve().parents[2] / "config" / "macro_experiment_v2.json"
+PROTOCOL_PATH = Path(__file__).resolve().parents[2] / "config" / "macro_experiment_v3.json"
 
 
 def migrate(conn):
@@ -94,6 +94,7 @@ def base_contract():
     from . import book_simulator as books
     from agents.opportunity_config import COMPOSITE_WEIGHTS, MIN_COMPOSITE
     from . import macro_provenance, book_mtm
+    import portfolio_ai as pai
     functions = (oa._score_quality, oa._score_valuation, oa._score_portfolio_fit,
                  oa._score_catalyst, oa._score_evidence, oa._composite, books._record_one_book)
     return digest({"source": [inspect.getsource(f) for f in functions],
@@ -101,7 +102,8 @@ def base_contract():
                    "slippage": books._DEFAULT_SLIPPAGE_PCT, "position_cap": books._MAX_POSITION_PCT,
                    "ticker_cap": books._MAX_TICKER_EXPOSURE_PCT,
                    "experiment_source": [inspect.getsource(f) for f in
-                       (adjustment, balanced_coverage, observe_cohort, macro_provenance.snapshot, _mature, _outcome)],
+                       (adjustment, balanced_coverage, observe_cohort, collect_daily_research, macro_provenance.snapshot, _mature, _outcome)],
+                   "interaction_source": [inspect.getsource(pai.compute_regime_stress), inspect.getsource(pai.compute_regime_adjusted_risk)],
                    "book_horizon_sessions": book_mtm.BOOK_HOLD_SESSIONS})
 
 
@@ -123,10 +125,30 @@ def register_epoch(conn, now=None):
     return epoch_id
 
 
-def adjustment(snap, protocol, dimensions=None):
+def adjustment(snap, protocol, dimensions=None, regime_stress=None):
     allowed = set(dimensions if dimensions is not None else DIMS) & set(snap.get("usable_dimensions", []))
     if snap.get("coverage_state") != "company_supported":
         return 0.0
+    for dim in allowed:
+        score = snap[dim]["score"]
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score) or not 1 <= score <= 10:
+            raise ValueError("invalid frozen macro score")
+    if protocol.get("treatment_kind") == "signed_interaction":
+        from portfolio_ai import compute_regime_adjusted_risk
+        interactions = compute_regime_adjusted_risk(snap, regime_stress)
+        if not interactions:
+            raise ValueError("decision-time regime required")
+        value = 0.0
+        for dim in allowed:
+            weight = protocol["dimension_weights"][dim]
+            if weight == 0:
+                continue
+            interaction = interactions.get(dim + "_regime_risk")
+            if interaction is None or not math.isfinite(interaction):
+                raise ValueError("missing interaction signal: " + dim)
+            value += weight * interaction
+        cap = protocol["adjustment_cap"]
+        return max(-cap, min(cap, cap * value))
     value = 0.0
     for dim in allowed:
         score = snap[dim]["score"]
@@ -257,13 +279,23 @@ def observe_cohort(conn, epoch_id, cohort_id, agent_run_id, candidates, captured
         return prior[0]
     eligible = [c for c in frozen if c["risk_eligible"]]
     envelope, dims, reason = balanced_coverage(frozen, protocol)
+    regime, regime_json = _regime(conn, captured_at)
+    stress = None
+    if protocol.get("treatment_kind") == "signed_interaction":
+        from portfolio_ai import compute_regime_stress
+        stress = compute_regime_stress(regime_json.get("regime", {}))
+        relevant = {d for d in dims if protocol["dimension_weights"][d] != 0}
+        if not reason and (not relevant or not stress or any(
+            stress.get("dollar_stress" if d == "dollar_sensitivity" else "rate_stress") is None
+            for d in relevant
+        )):
+            reason = "missing_decision_time_regime"
     for c in envelope:
-        c["adjustment"] = adjustment(json.loads(c["macro_snapshot"]), protocol, dims)
+        c["adjustment"] = 0.0 if reason else adjustment(json.loads(c["macro_snapshot"]), protocol, dims, stress)
         c["macro_score"] = c["base_score"] + c["adjustment"]
     control = min(eligible, key=lambda c: (-c["base_score"], c["ticker"])) if eligible else None
     macro = min(eligible, key=lambda c: (-c["macro_score"], c["ticker"])) if eligible else None
     date = datetime.fromtimestamp(captured_at, ET).date().isoformat()
-    regime, regime_json = _regime(conn, captured_at)
     conn.execute("SAVEPOINT macro_cohort")
     try:
         book_status = _books(conn, epoch_id, control, macro, date) if not reason else "EXCLUDED"
@@ -507,7 +539,9 @@ def _ablations(conn, rows, candidates, protocol, now):
             if not universe or not _mature(cohort["captured_at"], "3m", now):
                 continue
             allowed = set(dims) & set(json.loads(cohort["dimensions_json"]))
-            selected = min(universe, key=lambda c: (-(c["base_score"] + adjustment(json.loads(c["macro_snapshot"]), protocol, allowed)), c["ticker"]))
+            from portfolio_ai import compute_regime_stress
+            stress = compute_regime_stress(json.loads(cohort["regime_json"]).get("regime", {}))
+            selected = min(universe, key=lambda c: (-(c["base_score"] + adjustment(json.loads(c["macro_snapshot"]), protocol, allowed, stress)), c["ticker"]))
             if selected["episode_id"] == cohort["control_episode_id"]:
                 continue
             c = _outcome(conn, cohort["control_episode_id"], "3m", now)
@@ -520,3 +554,70 @@ def _ablations(conn, rows, candidates, protocol, now):
         result.update(exploratory=True, delta_mae=sum(maes) / len(maes) if maes else None)
         results[name] = result
     return results
+
+
+def collect_daily_research():
+    """One shadow comparison per trading date; no LLM selection or recommendations."""
+    import fcntl
+    import uuid
+    import agent_db
+    from agents import opportunity_agent as oa
+    from .episode_capture import capture_candidate_episode
+    from trade_engine.market_calendar import is_trading_day
+
+    # The existing pipeline may overlap a manual refresh. Keep the date check and
+    # capture under a process lock; this is a local lock, not a new scheduled job.
+    lock_path = Path(agent_db.DB_PATH).parent / 'macro_research.lock'
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with agent_db._connect() as conn:
+            epoch = register_epoch(conn)
+            if not epoch:
+                return {"status": "unavailable", "reason": "no_current_acceptance"}
+            now = time.time()
+            day = datetime.fromtimestamp(now, ET).date()
+            if not is_trading_day(day):
+                return {"status": "waiting_for_trading_day", "epoch_id": epoch}
+            prior = conn.execute("SELECT cohort_id,status,exclusion_reason FROM macro_experiment_cohorts WHERE epoch_id=? AND decision_date=? ORDER BY captured_at LIMIT 1", (epoch, str(day))).fetchone()
+            if prior:
+                return {"status": "already_collected", "cohort_id": prior[0], "cohort_status": prior[1], "reason": prior[2]}
+            # Use the same current macro source as the panel, frozen before capture.
+            import macro_context
+            macro = macro_context.fetch()
+            regime = macro.get('regime') or {}
+            if regime:
+                conn.execute("INSERT OR IGNORE INTO macro_regime_snapshots(snapshot_date,regime_json,created_at) VALUES (?,?,?)", (str(day), canonical(regime), datetime.fromtimestamp(time.time(), ET).isoformat()))
+                conn.commit()
+
+        winners = oa._get_buffett_winners()
+        names = {w['ticker'] for w in winners}
+        winners += [w for w in oa._get_manual_candidates() if w['ticker'] not in names]
+        held, weights = oa._get_current_tickers(), oa._get_layer_weights()
+        sectors = oa._get_holding_sectors(held)
+        candidates = []
+        for raw in winners:
+            if raw['ticker'] in held:
+                continue
+            w = dict(raw)
+            w['_q'], w['_v'] = oa._score_quality(w), oa._score_valuation(w)
+            w['_pf'], _ = oa._score_portfolio_fit(w, held, weights, sectors)
+            w['_c'], w['_ec'] = oa._score_catalyst(w), oa._score_evidence(w)
+            w['_composite'] = oa._composite(w['_q'], w['_v'], w['_pf'], w['_c'], w['_ec'])
+            candidates.append(w)
+        if not candidates:
+            return {"status": "unavailable", "reason": "no_unowned_candidates", "epoch_id": epoch}
+        run_id = agent_db.insert_agent_run('macro_research', trigger_type='daily_shadow', model='deterministic')
+        try:
+            captured = time.time()
+            book = {'held_tickers': sorted(held), 'layer_weights': {str(k): v for k,v in weights.items()}}
+            for w in candidates:
+                w['_episode_id'] = capture_candidate_episode(run_id, w, portfolio_snapshot=book, captured_at=captured, macro_epoch=epoch)
+            with agent_db._connect() as conn:
+                cid = observe_cohort(conn, epoch, str(uuid.uuid4()), run_id, candidates, captured)
+                conn.commit()
+                row = conn.execute('SELECT status,exclusion_reason,diverged FROM macro_experiment_cohorts WHERE cohort_id=?', (cid,)).fetchone()
+            agent_db.finish_agent_run(run_id)
+            return {'status': row[0], 'reason': row[1], 'diverged': bool(row[2]), 'cohort_id': cid, 'epoch_id': epoch}
+        except Exception as exc:
+            agent_db.finish_agent_run(run_id, status='error', error=str(exc))
+            raise

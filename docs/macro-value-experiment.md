@@ -6,7 +6,24 @@ workstream measures incremental selection value and grants no production influen
 
 ## Prospective protocol
 
-`config/macro_experiment_v2.json` is the current preregistration; v1 is retained.
+`config/macro_experiment_v3.json` is the current preregistration; v1/v2 are retained.
+V3 tests the panel's actual signed interactions rather than structural health alone:
+`adjustment = -5/3 * sum(usable rate, dollar and inflation-hedge interactions)`.
+These are exactly `compute_regime_adjusted_risk` values, including the inverse-rate
+inflation proxy. Missing dimensions retain their original weights (no renormalizing).
+The existing acceptance/coverage, uncertainty, risk and promotion gates are unchanged.
+Old protocol epochs remain separate and cannot be pooled into v3.
+
+The existing daily outcome-labeler job calls `collect_daily_research` independently of
+underweight-triggered Opportunity Hunter. It captures once per trading date using
+the same unowned candidate universe and base scoring, without LLM selection,
+recommendations or trade intents. It freezes the panel's macro regime before
+capture and reuses existing episodes, paired books and outcome labels. Weekends
+wait; missing current regime or accepted coverage is an explicit exclusion. No new
+scheduler, service, notification or database is introduced. The experimental card
+shows counts and exclusions and includes a collapsed interpretation guide.
+
+The original v2 structural treatment below remains documented for archived data:
 Before the first episode,
 the accepted artifact, protocol, ranking source and risk constants are hashed into
 an immutable epoch. Changing any of these starts a separate population. Reporting
@@ -169,3 +186,22 @@ Real canary `f9dad4ff-0e97-4a84-8a01-48ac7faab823` passed: cohort `87ff7744-b8bd
 Learning Lab API and rendered panel checks passed. The preparation timer is enabled and active. The current epoch is `83b0f50ce2e40ef5922a1718e0527cbe44e2957964eaf12f8a8481327da1e75a`, with collection starting at Unix timestamp `1789995200.4390466`. Verification found three observed prospective cohorts, zero divergent cohorts and zero matured divergent outcomes. Evidence is **INSUFFICIENT**; this is successful collection, not demonstrated predictive value.
 
 The protocol and scorer contract are frozen while observations accumulate. Stage remains 0 and production macro weight remains zero. Final ingestion fixes ensure fresh-schema valuation support, row-based valuation reads and per-ticker fetch completion timestamps; operational preparation waits for the existing publication guard and fails explicitly when coverage is not ready. These fixes do not alter the accepted scorer or experiment epoch. Full local regression: 1,362 passed, 16 skipped.
+
+## November 14 operational repair
+
+Learning Lab's RED operational health was a backup-delivery failure, separate from
+immature research outcomes. `investment.db` exceeded GitHub's 100 MiB regular-file
+limit; repeated pushes left unpushed history and timed-out job receipts.
+
+The existing backup job now publishes `investment.db.gz` to the same private
+`investment-data` repository, retaining its consistent raw SQLite snapshot locally
+for optional provenance signing. Writers are serialized; Git push/verification have
+bounded waits. Before migration, preserve the original local unpushed branch and
+start the compressed delivery branch from the verified remote main. Do not
+force-push oversized history or delete it. Old raw backups remain in remote history.
+
+Restore to a separate file first: `gzip -dc investment.db.gz > restored.db`, then
+verify with SQLite `PRAGMA integrity_check`. Signed provenance, when configured,
+refers to the decompressed snapshot bytes. A real verified remote push generates
+the ordinary COMPLETE receipt; watchdog history is retained. Warnings about
+immature outcomes or incomplete coverage remain visible.

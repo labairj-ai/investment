@@ -9,6 +9,13 @@ from agents.learning.macro_provenance import snapshot, accepted_contract, DIMS
 from agents.learning.macro_experiment import balanced_coverage, load_protocol, adjustment
 
 
+@pytest.fixture(autouse=True)
+def archived_structural_protocol(monkeypatch):
+    """Existing v2 fixtures retain their original structural-rule expectations."""
+    from agents.learning import macro_experiment as mx
+    monkeypatch.setattr(mx, 'PROTOCOL_PATH', mx.PROTOCOL_PATH.with_name('macro_experiment_v2.json'))
+
+
 @pytest.fixture
 def db(mem_db, monkeypatch):
     import portfolio_ai as pai
