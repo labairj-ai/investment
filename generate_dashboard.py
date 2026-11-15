@@ -778,6 +778,9 @@ def _macro_research_progress_html() -> str:
         mean = report.get('mean_selection_delta')
         if mean is not None:
             text += f" Mean macro-minus-baseline alpha: {mean * 100:+.2f} percentage points."
+        ci = report.get('mean_ci')
+        if ci is not None:
+            text += f" 95% interval: {ci[0] * 100:+.2f} to {ci[1] * 100:+.2f} percentage points."
         return '<p style="font-size:11px;color:#92400e;margin:8px 0;">' + _html.escape(text) + '</p>'
     except Exception:
         return '<p style="font-size:11px;color:#92400e;margin:8px 0;">Research status unavailable — no recommendation influence.</p>'

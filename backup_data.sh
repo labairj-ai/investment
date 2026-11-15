@@ -8,7 +8,8 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export PROJECT_DIR
-BACKUP_DIR="$HOME/.investment-backup"
+export BACKUP_DIR="${INVESTMENT_BACKUP_DIR:-$HOME/.investment-backup}"
+export GIT_TERMINAL_PROMPT=0
 TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # ── Ensure backup repo is present ─────────────────────────────────────────────
@@ -16,6 +17,10 @@ if [ ! -d "$BACKUP_DIR/.git" ]; then
   echo "[backup] Cloning investment-data repo…"
   git clone https://github.com/labairj-ai/investment-data.git "$BACKUP_DIR"
 fi
+
+# Serialize database snapshots and Git writes when scheduler/manual runs overlap.
+exec 9>"$BACKUP_DIR/.backup.lock"
+flock -n 9 || { echo "[backup] Another backup is running; retry later." >&2; exit 1; }
 
 # ── Copy binary files ─────────────────────────────────────────────────────────
 # SQLite's online backup includes committed WAL content; raw cp can omit it.
@@ -25,6 +30,13 @@ fi
 if [ -n "${DEV_AGENT_BACKUP_SIGNING_KEY:-}" ]; then
   "$PROJECT_DIR/venv/bin/python3" "$PROJECT_DIR/scripts/backup_provenance.py" "$BACKUP_DIR/investment.db"
 fi
+# GitHub rejects individual blobs over 100 MiB. Retain the raw consistent
+# snapshot locally for provenance/restore, but publish its lossless gzip form.
+gzip -n -c "$BACKUP_DIR/investment.db" > "$BACKUP_DIR/investment.db.gz.tmp"
+gzip -t "$BACKUP_DIR/investment.db.gz.tmp"
+mv "$BACKUP_DIR/investment.db.gz.tmp" "$BACKUP_DIR/investment.db.gz"
+# Refuse a future oversized archive before creating an undeliverable commit.
+test "$(wc -c < "$BACKUP_DIR/investment.db.gz")" -lt 104857600
 cp "$PROJECT_DIR/holdings.csv"       "$BACKUP_DIR/holdings.csv"
 
 if [ -f "$PROJECT_DIR/out/buffett.db" ]; then
@@ -36,7 +48,7 @@ fi
 import json, sqlite3, os, sys
 
 db_path = os.path.join(os.environ.get("PROJECT_DIR", "."), "out", "investment.db")
-out_path = os.path.join(os.path.expanduser("~"), ".investment-backup", "theses.json")
+out_path = os.path.join(os.environ["BACKUP_DIR"], "theses.json")
 
 try:
     conn = sqlite3.connect(db_path)
@@ -78,7 +90,12 @@ PYEOF
 
 # ── Commit and push if anything changed ───────────────────────────────────────
 cd "$BACKUP_DIR"
-git add investment.db holdings.csv theses.json 2>/dev/null
+git rm --cached --ignore-unmatch investment.db
+# Ignore raw local snapshots/sidecars and lock/temp files in this private clone.
+for pattern in investment.db '*.db-shm' '*.db-wal' '*.tmp' .backup.lock; do
+  grep -qxF "$pattern" .gitignore 2>/dev/null || printf '%s\n' "$pattern" >> .gitignore
+done
+git add .gitignore investment.db.gz holdings.csv theses.json
 if [ -n "${DEV_AGENT_BACKUP_SIGNING_KEY:-}" ]; then
   git add investment.provenance.json
 fi
@@ -90,8 +107,8 @@ else
   git commit -m "Data backup — $TIMESTAMP"
 fi
 # Push even with no new diff: an earlier commit may still be ahead after a failed push.
-git push origin main
+timeout 90s git push origin HEAD:main
 BACKUP_LOCAL_HEAD="$(git rev-parse HEAD)"
-BACKUP_REMOTE_HEAD="$(git ls-remote origin refs/heads/main | cut -f1)"
+BACKUP_REMOTE_HEAD="$(timeout 15s git ls-remote origin refs/heads/main | cut -f1)"
 test "$BACKUP_LOCAL_HEAD" = "$BACKUP_REMOTE_HEAD"
 echo "[backup] Destination verified at $BACKUP_LOCAL_HEAD"
