@@ -124,3 +124,23 @@ def test_card_has_collapsed_guide_and_read_only_progress(tmp_path,monkeypatch):
     assert 'does not measure inflation directly' in html
     assert 'Research status unavailable' in html
     assert not (tmp_path/'absent.db').exists()
+
+
+def test_existing_nightly_job_collects_only_outside_dry_run(monkeypatch):
+    import ast
+    import sys
+    from pathlib import Path
+    from unittest.mock import Mock
+    import covered_call_ledger
+    source=ast.parse((Path(__file__).resolve().parents[1]/'agents/learning/outcome_labeler.py').read_text())
+    main=next(n for n in source.body if isinstance(n,ast.If) and ast.unparse(n.test)=="__name__ == '__main__'")
+    code=compile(ast.Module(body=main.body,type_ignores=[]),'outcome-main','exec')
+    collect=Mock(return_value={'status':'OBSERVED'})
+    monkeypatch.setattr(mx,'collect_daily_research',collect)
+    monkeypatch.setattr(covered_call_ledger,'refresh_labels',Mock())
+    scope={'sys':sys,'label_mature_episodes':Mock(),'label_risk_counterfactuals':Mock(),'label_trade_outcomes':Mock()}
+    monkeypatch.setattr(sys,'argv',['outcome_labeler','--dry-run']);exec(code,scope)
+    collect.assert_not_called()
+    monkeypatch.setattr(sys,'argv',['outcome_labeler']);exec(code,scope)
+    collect.assert_called_once_with()
+    scope['label_mature_episodes'].assert_any_call(dry_run=False)

@@ -1033,13 +1033,6 @@ def _run_agent_pipeline(log_path=None) -> None:
             f"total_value={snapshot.total_value:.0f}"
         )
 
-        # Research collection does not depend on an underweight recommendation trigger.
-        try:
-            from agents.learning.macro_experiment import collect_daily_research
-            _log(f"[macro research] {collect_daily_research()}")
-        except Exception as exc:
-            _log(f"[macro research] Collection failed: {exc}")
-
         from agents.triggers import detect_triggers
         events = detect_triggers(snapshot)
         _run_ids = []

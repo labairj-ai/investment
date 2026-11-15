@@ -4,7 +4,7 @@ Status: in-progress
 Base: daba23d63263fb40760d94e470cc03c542e4b1c4
 Risk: research-only financial analysis; no recommendation influence.
 
-Use the existing daily pipeline, experiment ledger, outcome labeler and report.
+Use the existing daily outcome-labeler job, experiment ledger, outcome labeler and report.
 Capture one shadow comparison per trading date, independently of underweight
 triggers. Freeze the panel's signed rate/dollar/inflation-proxy interactions in a
 new protocol version; keep old structural experiments separate. No new service,

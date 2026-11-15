@@ -14,7 +14,7 @@ inflation proxy. Missing dimensions retain their original weights (no renormaliz
 The existing acceptance/coverage, uncertainty, risk and promotion gates are unchanged.
 Old protocol epochs remain separate and cannot be pooled into v3.
 
-The existing daily agent pipeline calls `collect_daily_research` independently of
+The existing daily outcome-labeler job calls `collect_daily_research` independently of
 underweight-triggered Opportunity Hunter. It captures once per trading date using
 the same unowned candidate universe and base scoring, without LLM selection,
 recommendations or trade intents. It freezes the panel's macro regime before

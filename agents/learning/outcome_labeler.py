@@ -629,3 +629,9 @@ if __name__ == "__main__":
     label_trade_outcomes(dry_run=dry)
     from covered_call_ledger import refresh_labels
     print("[covered_call_labeler]", refresh_labels(dry_run=dry))
+
+    if not dry:
+        # Existing weekday job: collect even when no underweight agent is triggered.
+        # Run after labeling so a research failure cannot suppress normal outcomes.
+        from agents.learning.macro_experiment import collect_daily_research
+        print("[macro research]", collect_daily_research())

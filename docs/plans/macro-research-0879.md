@@ -5,7 +5,7 @@ Hunter; its last actual run was October 2. The existing protocol tests structura
 scores, whereas the displayed panel multiplies exposures by signed regime stress.
 
 Reuse the existing ledger and labeler. One daily shadow-only capture from the
-existing pipeline uses the same candidate scoring and accepted coverage. A new
+existing outcome-labeler job uses the same candidate scoring and accepted coverage. A new
 protocol tests the displayed signed interactions with the existing five-point
 research cap; no live score changes. Keep archived v2 available. Freeze current
 regime inputs before the decision; unavailable inputs exclude the cohort. Add
