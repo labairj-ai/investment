@@ -94,6 +94,7 @@ def base_contract():
     from . import book_simulator as books
     from agents.opportunity_config import COMPOSITE_WEIGHTS, MIN_COMPOSITE
     from . import macro_provenance, book_mtm
+    import portfolio_ai as pai
     functions = (oa._score_quality, oa._score_valuation, oa._score_portfolio_fit,
                  oa._score_catalyst, oa._score_evidence, oa._composite, books._record_one_book)
     return digest({"source": [inspect.getsource(f) for f in functions],
@@ -102,6 +103,7 @@ def base_contract():
                    "ticker_cap": books._MAX_TICKER_EXPOSURE_PCT,
                    "experiment_source": [inspect.getsource(f) for f in
                        (adjustment, balanced_coverage, observe_cohort, collect_daily_research, macro_provenance.snapshot, _mature, _outcome)],
+                   "interaction_source": [inspect.getsource(pai.compute_regime_stress), inspect.getsource(pai.compute_regime_adjusted_risk)],
                    "book_horizon_sessions": book_mtm.BOOK_HOLD_SESSIONS})
 
 
