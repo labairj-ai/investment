@@ -8,6 +8,13 @@ import agent_db
 from agents.learning import macro_experiment as mx
 
 
+@pytest.fixture(autouse=True)
+def archived_structural_protocol(monkeypatch):
+    """Existing v2 fixtures retain their original structural-rule expectations."""
+    from agents.learning import macro_experiment as mx
+    monkeypatch.setattr(mx, 'PROTOCOL_PATH', mx.PROTOCOL_PATH.with_name('macro_experiment_v2.json'))
+
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_db, "DB_PATH", tmp_path / "experiment.db")

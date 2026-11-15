@@ -751,6 +751,38 @@ def _build_macro_trend_data(macro_history, today_holdings_sorted) -> dict:
     return {"dates": all_dates, "portfolio": port_series, "layers": layer_datasets}
 
 
+def _macro_research_progress_html() -> str:
+    """Read the existing experiment report; never register or collect during rendering."""
+    try:
+        from agents.learning.macro_experiment import evaluate
+        conn = sqlite3.connect(DB_PATH.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            report = evaluate(conn)
+        finally:
+            conn.close()
+        state = _html.escape(str(report['evidence_state']).replace('_', ' ').title())
+        observed = report['prospective_cohorts']
+        changed = report['divergent_cohorts']
+        matured = report['matured_divergent']
+        excluded = report['excluded_cohorts']
+        exclusions = report.get('exclusions', {})
+        detail = ', '.join(f"{key}: {n}" for key, n in exclusions.items())
+        blockers = report.get('blockers', []) + report.get('risk_blockers', [])
+        # Counts make stalled collection visible without another dashboard or alert.
+        text = f"Research status: {state} · {observed} comparisons · {changed} changed selections · {matured} mature 63-session pairs · {excluded} excluded."
+        if detail:
+            text += ' Exclusions: ' + detail + '.'
+        if blockers:
+            text += ' Waiting on: ' + '; '.join(blockers) + '.'
+        mean = report.get('mean_selection_delta')
+        if mean is not None:
+            text += f" Mean macro-minus-baseline alpha: {mean * 100:+.2f} percentage points."
+        return '<p style="font-size:11px;color:#92400e;margin:8px 0;">' + _html.escape(text) + '</p>'
+    except Exception:
+        return '<p style="font-size:11px;color:#92400e;margin:8px 0;">Research status unavailable — no recommendation influence.</p>'
+
+
 def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list) -> str:
     """Build experimental regime stress vs structural exposure display (0482).
     EXPERIMENTAL — research only. Not used in any trading or risk-gate logic."""
@@ -810,7 +842,7 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
         adj = pai.compute_regime_adjusted_risk(scores, regime_stress)
         if adj is None:
             continue
-        struct = _compute_macro_composite(scores) or 0
+        struct = _compute_macro_composite(scores)
 
         def _signed_bar(val, color_adverse, color_favorable="#38a169"):
             """Render a signed interaction value. Positive=red(adverse), negative=green(favorable)."""
@@ -832,7 +864,7 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
             f'<tr style="border-bottom:1px solid #f8f8f8;">'
             f'<td style="padding:4px 8px;font-size:11px;font-weight:600;color:#1a2340;">{ticker}</td>'
             f'<td style="padding:4px 8px;text-align:center;">'
-            f'<span style="font-size:11px;font-weight:700;color:{_composite_color(struct)};">{struct}</span>'
+            f'<span style="font-size:11px;font-weight:700;color:{_composite_color(struct)};">{struct if struct is not None else "—"}</span>'
             f'</td>'
             f'<td style="padding:4px 8px;">{_signed_bar(adj.get("rate_sensitivity_regime_risk"), "#e74c3c")}</td>'
             f'<td style="padding:4px 8px;">{_signed_bar(adj.get("dollar_sensitivity_regime_risk"), "#3498db")}</td>'
@@ -872,10 +904,27 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
         </table>
       </div>
       <div style="font-size:9px;color:#a0aec0;margin-top:8px;">
-        Signed interaction: +1=adverse (exposure amplified by regime), -1=favorable (exposure offset by regime).
-        +1=adverse, -1=favorable. Regime Stress: +1=adverse, -1=favorable (signed: +1=adverse, -1=favorable).
-        After ≥4 weeks of parallel data, compare rankings vs. structural composite before promoting.
+        Positive interactions = modeled headwinds; negative = modeled tailwinds. Not predicted returns.
       </div>
+      {_macro_research_progress_html()}
+      <details style="margin-top:12px;border-top:1px solid #fde68a;padding-top:10px;">
+        <summary style="cursor:pointer;font-size:12px;font-weight:700;color:#92400e;">How to read these numbers</summary>
+        <div style="font-size:12px;line-height:1.7;color:#4a5568;padding:10px 0;max-width:850px;">
+          <p><strong>The question:</strong> do recent macro conditions create a headwind or a tailwind for this holding's structural exposures?</p>
+          <ul style="padding-left:20px;margin:8px 0;">
+            <li><strong>Structural Health (0–100):</strong> higher is a more favorable structural macro profile. It is an AI estimate combining rate, dollar, geopolitical and inflation-hedge scores; it is not regime-adjusted or a return forecast.</li>
+            <li><strong>Rate and Dollar Interaction (−1 to +1):</strong> positive means a modeled headwind; negative means a modeled tailwind. Larger absolute values mean a stronger interaction. Dollar headwinds are blue in this table, so read the sign rather than assuming blue means favorable.</li>
+            <li><strong>Rate Stress:</strong> the 10-year Treasury yield change over 63 trading days, divided by 150 basis points and capped at −1/+1. Rising yields are positive; falling yields are negative.</li>
+            <li><strong>Dollar Stress:</strong> the UUP dollar-proxy percentage change over 63 trading days, divided by 5 percentage points and capped at −1/+1. Strengthening is positive; weakening is negative.</li>
+            <li><strong>Inflation Hedge:</strong> the current formula multiplies hedge exposure by the opposite of rate stress. It does not measure inflation directly. This rough proxy is being tested, not assumed reliable.</li>
+            <li><strong>VIX stress (0–100%):</strong> a scaled indicator from VIX 15 (0%) to VIX 35 (100%). VIX 25 gives 50%; that is not a crash probability. VIX is context only and does not enter the interaction columns.</li>
+            <li><strong>UNKNOWN / N/A:</strong> missing evidence, not a neutral or safe reading. Rows are per holding and do not incorporate position size.</li>
+          </ul>
+          <p><strong>Example:</strong> rate sensitivity 8/10 becomes (8−1)/9 = 0.78. With rate stress +0.50, Rate Interaction is about +0.39: a modeled rate headwind, not a predicted 39% loss or a probability. Falling-rate stress −0.50 gives −0.39.</p>
+          <p style="margin-top:8px;"><strong>Research test:</strong> compare the unchanged candidate ranking with the same ranking adjusted by these signed interactions, using the same evidence available at the time. We track changed selections and their later outcomes. The inflation proxy is part of the test; success is not assumed. The 63-session outcome is primary; 5- and 21-session results are early diagnostics. Elapsed weeks alone do not validate the signal.</p>
+          <p style="margin-top:8px;"><strong>Use:</strong> identify exposures to investigate. These numbers do not change recommendations, position sizes, trading decisions or risk gates. Positive evidence would support considering a small recommendation adjustment; adverse evidence supports rejecting the tested rule. Too little evidence or an uncertain result stays inconclusive.</p>
+        </div>
+      </details>
     </div>'''
 
 

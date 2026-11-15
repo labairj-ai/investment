@@ -6,7 +6,24 @@ workstream measures incremental selection value and grants no production influen
 
 ## Prospective protocol
 
-`config/macro_experiment_v2.json` is the current preregistration; v1 is retained.
+`config/macro_experiment_v3.json` is the current preregistration; v1/v2 are retained.
+V3 tests the panel's actual signed interactions rather than structural health alone:
+`adjustment = -5/3 * sum(usable rate, dollar and inflation-hedge interactions)`.
+These are exactly `compute_regime_adjusted_risk` values, including the inverse-rate
+inflation proxy. Missing dimensions retain their original weights (no renormalizing).
+The existing acceptance/coverage, uncertainty, risk and promotion gates are unchanged.
+Old protocol epochs remain separate and cannot be pooled into v3.
+
+The existing daily agent pipeline calls `collect_daily_research` independently of
+underweight-triggered Opportunity Hunter. It captures once per trading date using
+the same unowned candidate universe and base scoring, without LLM selection,
+recommendations or trade intents. It freezes the panel's macro regime before
+capture and reuses existing episodes, paired books and outcome labels. Weekends
+wait; missing current regime or accepted coverage is an explicit exclusion. No new
+scheduler, service, notification or database is introduced. The experimental card
+shows counts and exclusions and includes a collapsed interpretation guide.
+
+The original v2 structural treatment below remains documented for archived data:
 Before the first episode,
 the accepted artifact, protocol, ranking source and risk constants are hashed into
 an immutable epoch. Changing any of these starts a separate population. Reporting
