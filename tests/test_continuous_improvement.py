@@ -203,7 +203,7 @@ def test_synthetic_merge_event_cannot_be_forged(store):
 
 
 @pytest.mark.parametrize('path,content,risk',[('docs/note.md','Corrected documented operator detail\n','L0'),('tests/test_added_case.py','def test_added(): assert True\n','L1'),('static/pilot.css','body { color: navy; }\n','L2')])
-def test_supervised_policy_journey_reaches_exact_head_pr_fixture(repo,owner_setup,monkeypatch,path,content,risk):
+def test_supervised_policy_journey_reaches_exact_head_pr_fixture(repo,owner_setup,monkeypatch,tmp_path,path,content,risk):
     from dev_agent import build_policy,certification,operations,discovery
     from dev_agent.runner import ContainerValidator
     from dev_agent.providers import ReplayProvider
@@ -226,6 +226,8 @@ def test_supervised_policy_journey_reaches_exact_head_pr_fixture(repo,owner_setu
     monkeypatch.setattr(static_validation,'installed',lambda *a:dict(status='PASS',fixture_only=True))
     # Isolated pipeline component test; shared live admission has its own parity tests.
     monkeypatch.setattr(improvement_loop,'supervised_admission',lambda *a,**k:dict(status='READY'))
+    from test_development_agent_watchdog import ready_watchdog_fixture
+    ready_watchdog_fixture(monkeypatch,tmp_path,config,discovery.git(repo,'rev-parse','HEAD'),time.time())
     build_policy.approve(repo,store,['docs/*','tests/*','static/*'],human=human,nonce='owner-delegated-test-0001',rationale='Synthetic bounded operator policy',expires_at=time.time()+3600)
     cid=store.discover(proposal(files=[path],problem='Observed missing detail: '+path,focused_tests=['tests/test_oracle.py']))
     validator=ContainerValidator('fixture@sha256:'+'a'*64)

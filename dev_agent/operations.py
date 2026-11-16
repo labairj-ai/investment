@@ -108,6 +108,9 @@ def authorize_start(root,store,cid,mode,technical,protections,*,human=None,now=N
         if not eligibility(root,store,now)['eligible']: raise ValueError('supervised observation requirements not met')
         from .stage_control import require as require_stage
         require_stage(root,store,protections=protections,technical=technical)
+    if mode=='SUPERVISED':
+        from .watchdog_gate import require_coverage
+        require_coverage(root,now=now)
     slot=datetime.fromtimestamp(now,ZoneInfo('America/New_York')).date().isoformat()
     payload=dict(candidate=cid,context=context,mode=mode,harness_hash=harness_hash(root),created=now,slot=slot,protection_policy=authority['policy_hash'],protection_identity=authority['identity'],**(human.audit() if human else {'actor':'owner-delegated-supervised-policy' if mode=='SUPERVISED' else 'policy-admission','authentication_source':'owner-build-policy' if mode=='SUPERVISED' else 'autonomy-policy','nonce':str(uuid.uuid4())}))
     with store.connect(True) as db:

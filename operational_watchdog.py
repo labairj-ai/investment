@@ -434,12 +434,22 @@ def report(path=None, now=None):
         return dict(overall='UNKNOWN',checked_at=None,components=[])
 
 
+
+def _notification_rows(state):
+    # The aggregate discovery card is a projection, not a duplicate alert.
+    # All pre-existing components retain their exact notification semantics.
+    rows=list(state.execute("SELECT * FROM system_watchdog_state WHERE status IN ('RED','YELLOW')"))
+    child=max((RANK[r['status']] for r in rows if r['component'].startswith('development_discovery_')),default=-1)
+    return [r for r in rows if r['component']!='development_discovery' or RANK[r['status']]>child]
+
+
 def delivery_failures(state, now):
     keys=[]
-    for r in state.execute("SELECT incident_id FROM system_watchdog_state WHERE status='RED' AND incident_id IS NOT NULL"):
-        event=state.execute("SELECT event_id FROM watchdog_events WHERE incident_id=? AND severity='RED' ORDER BY detected_at DESC LIMIT 1",(r[0],)).fetchone()
+    for r in _notification_rows(state):
+        if r['status']!='RED' or not r['incident_id']:continue
+        event=state.execute("SELECT event_id FROM watchdog_events WHERE incident_id=? AND severity='RED' ORDER BY detected_at DESC LIMIT 1",(r['incident_id'],)).fetchone()
         if event: keys.append('red:'+event[0])
-    if state.execute("SELECT 1 FROM system_watchdog_state WHERE status='YELLOW' AND component!='notification_delivery' LIMIT 1").fetchone():
+    if any(r['status']=='YELLOW' and r['component']!='notification_delivery' for r in _notification_rows(state)):
         keys.append('yellow:'+datetime.fromtimestamp(now,ET).date().isoformat())
     return sum(bool(state.execute('SELECT 1 FROM watchdog_delivery WHERE delivery_key=? AND delivered_at IS NULL AND error IS NOT NULL',(key,)).fetchone()) for key in keys)
 
@@ -447,6 +457,19 @@ def delivery_failures(state, now):
 def alert_summary(row):
     """Readable operational metadata only; never include portfolio evidence."""
     detail = json.loads(row['detail'])
+    if row['component'].startswith('development_discovery'):
+        # Only fixed reason codes and typed diagnostic metadata enter alerts.
+        # Never serialize source ledger/spool/root evidence into email.
+        from dev_agent.discovery_watchdog import REASONS,HEX40,valid_hex
+        e=detail.get('evidence',{});head=e.get('source_head')
+        slot=e.get('expected_slot');import re
+        if not isinstance(slot,str) or not re.fullmatch(r'scout:\d{4}-\d{2}-\d{2}',slot):slot='not yet due'
+        success=row['last_success_at']
+        if type(success) not in (int,float):success=None
+        return '\n'.join(['Development discovery '+row['status']+' — '+REASONS.get(e.get('code'),REASONS['unavailable']),
+                         'Component: '+('development_discovery' if row['component']=='development_discovery' else row['component'] if row['component'] in {'development_discovery_'+v for v in ('source','authority','schedule','signals','scheduler','execution','host_safety','coverage')} else 'development_discovery'),
+                         'Expected slot: '+slot,'Source: '+(head if valid_hex(head,HEX40) else 'unavailable'),
+                         'Last valid run: '+(datetime.fromtimestamp(success,ET).isoformat() if success else 'none')])
     success = row['last_success_at']
     success_text = datetime.fromtimestamp(success, ET).isoformat() if success else 'No successful completion recorded'
     lines = [f"{row['component']}: {detail['reason']}",
@@ -466,11 +489,12 @@ def deliver(state, now, transport, enabled=False):
     ET. Failed deliveries retry at 15m, 30m, 1h, 2h, then at most every 6h.
     """
     pending=[]
-    for row in state.execute("SELECT * FROM system_watchdog_state WHERE status='RED' AND incident_id IS NOT NULL"):
+    for row in _notification_rows(state):
+        if row['status']!='RED' or not row['incident_id']:continue
         event=state.execute("SELECT event_id FROM watchdog_events WHERE incident_id=? AND severity='RED' ORDER BY detected_at DESC LIMIT 1",(row['incident_id'],)).fetchone()
         pending.append(('red:'+event[0], 'RED operational watchdog: '+row['component'],[dict(row)]))
     et=datetime.fromtimestamp(now,ET)
-    yellow=[dict(r) for r in state.execute("SELECT * FROM system_watchdog_state WHERE status='YELLOW'")]
+    yellow=[dict(r) for r in _notification_rows(state) if r['status']=='YELLOW']
     if yellow and et.hour>=20:
         pending.append(('yellow:'+et.date().isoformat(),'Operational watchdog: unresolved YELLOW findings',yellow))
     sent=0
