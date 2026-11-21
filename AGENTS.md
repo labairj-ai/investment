@@ -41,9 +41,10 @@ remains part of an authorized software task.
 6. Use PR-based changes and satisfy required CI, security checks and existing
    branch protections. An explicit user task authorizes its normal implementation,
    testing, merging and deployment within that task's scope; do not request an
-   intermediate owner approval for routine work. Use the existing owner process
-   to carry that authorization through the release. Move a TODO to `.todos/done/`
-   only after every acceptance and QA requirement is met with implementation and
+   intermediate owner approval for routine work. Follow the release paths in
+   [Standing task authorization and owner release workflow](docs/solo-owner-governance.md).
+   Move a TODO to `.todos/done/` only after every acceptance and QA requirement
+   is met with implementation and
    CI evidence. Incomplete or unavailable checks remain explicitly open, never
    silently marked PASS.
 
@@ -94,9 +95,10 @@ existing rule against agent self-approval remains in force.
 - L5: task authorization, execution/account-mutation safeguards and required
   technical deployment gates; financial risk must be surfaced in the task context.
 
-The existing owner process records task authorization against the repository, PR,
-exact head and risk, authenticated owner, timestamp and nonce. The initiating task
-authorization is the owner decision for routine in-scope work; agents must never
+The automated owner process records task authorization against the repository, PR,
+exact head and risk, authenticated owner, timestamp and nonce. The manual release
+path uses the explicit task authorization and records technical release evidence.
+The initiating task authorization is the owner decision for routine in-scope work; agents must never
 invent or broaden it. auto_merge=false and required_human_merge=true remain
 mandatory, and the owner retains final merge authority through the existing
 connector. The same task authorization covers the resulting exact merge SHA's

@@ -1,38 +1,45 @@
 # Standing task authorization and owner release workflow
 
-An explicit owner task authorizes normal implementation, testing, merging and
-deployment within the requested scope. ChatGPT reviews the resulting PR diff, exact
-head, risk and current CI. The existing owner connector records the initiating task
-authorization against that exact PR and continues automatically when its technical
-checks pass. No intermediate Go/No-Go request, SHA copying, structured comments,
-script or second deployment approval is required for routine in-scope work.
+An explicit owner task authorizes routine implementation, testing, merge, and
+deployment within its scope. Carry that authorization through the release. The
+owner does not need to repeat it after CI, after merge, or before deployment.
+
+## Routine release
+
+1. Review the complete diff, verify the exact PR head, and confirm that its
+   required CI and domain checks pass. Merge through the existing protected PR
+   path using the reviewed head SHA.
+2. Confirm the merge commit is current main and passes its own required CI.
+   Recheck the diff and tests if the head changes. Ask for a new decision only
+   if the change goes beyond the authorized scope.
+3. Use the installed release tooling. For an explicitly authorized manual
+   OptiPlex release, use the existing SSH access and source synchronization
+   tooling. Verify the tracked production worktree and source influence, back
+   up protected state, deploy the exact tested merge SHA, and verify the
+   service, application, protected data, and trading and autonomy settings.
+   Follow the existing observation and rollback checks. Roll back code if a
+   health or state-integrity check fails.
+4. Report the deployed SHA, CI, backup and health evidence, and any rollback.
+
+The manual release uses the initiating task authorization. It does not require
+a second owner decision or an approval object from the optional automated
+controller. The manual release must pass the same applicable technical checks.
+Keep GitHub protections, financial safety controls, and autonomous execution
+settings intact. An owner No-Go stops the release.
+
+## Automated release
+
+Where an isolated owner connector and deployment poller are already installed
+and accepted, they can carry the same task authorization through their existing
+exact-head checks and receipts. Their authentication, replay, and admission
+checks continue to apply to automated releases. A manual release must never
+fabricate their records. Connector provisioning is separate work and is not a
+prerequisite for an explicitly authorized manual release.
 
 Pause for a new owner decision when a proposed action is both genuinely high-risk
 and outside the task scope, including live-trading activation, changes to financial
 safety controls, or secret access/exposure. Preserve all applicable domain canaries,
 CI, security controls and GitHub protections in every case.
-
-The isolated owner connector freezes the reviewed context, authenticates the
-personal owner's GitHub ID/login, and uses the existing `go_no_go`/continuation
-path to record task authorization against the current exact PR head. It generates
-nonce and audit metadata internally. The fixed expected-SHA merge runs after
-exact-head CI passes. `reconcile_approved` retries while CI is pending. A changed
-head requires refreshed technical checks and a new exact-head authorization record
-derived from the same task scope; it does not require another user prompt. Technical
-certificates, protection evidence and health still expire independently and are
-rechecked.
-The connector must be installed outside candidate source with credentials that
-Builder, Reviewer, Scout and the implementation service cannot access.
-
-The deployment poller consumes that **same review object's ID**, verifies the
-latest decision, exact approved head, actual owner merge actor, exact merge SHA,
-head CI, merged-main CI, ancestry and current main. It waits automatically while
-CI is pending. It does not consume OWNER-DEPLOY or OWNER-AUTONOMY-PROMOTION objects.
-The fixed controller still enforces clean source, backup, fixed service controls,
-HTTP/API and Advisor health, protected investment state, delayed observation,
-rollback and interruption recovery. Owner review, merge and deployment receipts
-remain distinct. The owner sees DEPLOYED or FAILED, with diagnostics for failures.
-No arbitrary shell, broker function or investment-data rollback is permitted.
 
 An activation PR cannot result from routine code task authorization. Runtime re-verifies
 its installed source, deterministic reviewed risk, owner, current GitHub decision and CI; it does not
