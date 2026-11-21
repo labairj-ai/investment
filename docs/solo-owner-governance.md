@@ -4,6 +4,16 @@ An explicit owner task authorizes routine implementation, testing, merge, and
 deployment within its scope. Carry that authorization through the release. The
 owner does not need to repeat it after CI, after merge, or before deployment.
 
+The owner has explicitly opted out of all per-PR review ceremonies. Do not ask
+them to review a routine PR, click Merge, repeat Go/No-Go, or initiate a separate
+OptiPlex release. "Ready for review" or "awaiting owner review" is not a final
+result for an authorized task. Internal technical review, required CI, GitHub
+protections and safety checks still apply. When tools can perform the operation,
+continue directly to merge, production sync/deployment and verification. If an
+actual technical check fails or deployment access is unavailable, report that
+specific unresolved blocker; do not disguise it as missing owner approval.
+Do not create another release integration, gate, or review infrastructure.
+
 ## Routine release
 
 1. Review the complete diff, verify the exact PR head, and confirm that its
@@ -20,6 +30,9 @@ owner does not need to repeat it after CI, after merge, or before deployment.
    Follow the existing observation and rollback checks. Roll back code if a
    health or state-integrity check fails.
 4. Report the deployed SHA, CI, backup and health evidence, and any rollback.
+   Completing GitHub merge alone does not complete the task. For documentation-only
+   changes, sync the merged commit to OptiPlex without an unnecessary service
+   restart; verify its checkout SHA. No second owner interaction is required.
 
 The manual release uses the initiating task authorization. It does not require
 a second owner decision or an approval object from the optional automated

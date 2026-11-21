@@ -28,7 +28,7 @@ remains part of an authorized software task.
 1. Start from verified current main in an isolated task branch or worktree; inspect
    working-tree state and preserve unrelated work. Record the base SHA and TODO.
 2. Plan before code for non-trivial work: state the problem, acceptance criteria,
-   scope, risk, tests and required human decisions. Implement the smallest scope.
+   scope, risk, tests and any genuine scope or safety blockers. Implement the smallest scope.
 3. Run focused tests and required regression tests. Review the complete candidate
    diff, including generated/configuration files and all commits, for scope,
    safety, test integrity and secret exposure.
@@ -41,7 +41,10 @@ remains part of an authorized software task.
 6. Use PR-based changes and satisfy required CI, security checks and existing
    branch protections. An explicit user task authorizes its normal implementation,
    testing, merging and deployment within that task's scope; do not request an
-   intermediate owner approval for routine work. Follow the release paths in
+   intermediate owner approval for routine work. Do not stop at a PR labeled
+   'awaiting review' or ask the owner to click Merge. Continue through technical
+   validation, owner-authenticated GitHub merge, OptiPlex deployment/sync and
+   verification using existing tools. Follow the release paths in
    [Standing task authorization and owner release workflow](docs/solo-owner-governance.md).
    Move a TODO to `.todos/done/` only after every acceptance and QA requirement
    is met with implementation and
@@ -74,19 +77,21 @@ mandatory. This contract cannot authorize exceptions to those controls.
 
 ## Solo-owner governance
 
-For this personal repository, the repository owner may serve as the human reviewer
-and approver, including for changes authored through the owner's GitHub account.
-Independent review separates human authority from AI and automation authority.
-A second human reviewer is optional unless explicitly required by the owner for a
-specific change. Coding agents cannot approve their own work. Reviewer models, CI
-and autonomous workflows cannot grant merge authority. The human repository owner
-retains final merge authority. An explicit task authorization covers routine
-changes within its stated scope through merge and deployment; the existing
-authenticated owner process records and carries that authorization for the exact
-PR head after technical review. No additional user decision is requested for
-routine continuation. A new head requires refreshed technical checks. This is an
-intentional permanent owner governance decision, not a PR #6 exemption. The
-existing rule against agent self-approval remains in force.
+The owner's standing instruction is **no per-PR review or approval requests**.
+Once the owner authorizes a task, the normal outcome is: implement -> test ->
+technical diff review -> push PR to GitHub -> merge after required CI -> sync or
+deploy the exact merged commit to OptiPlex -> verify -> report. This applies to
+README/documentation, UI, bug fixes and other work within the authorized task.
+The owner will not review PRs, click Merge or repeat Go/No-Go for routine work.
+The agent must not present "awaiting owner review" as the normal completion state.
+
+Review means internal technical review of code, tests, financial behavior and
+security, not a new owner interaction. The initiating task is the owner decision
+for its scope; owner-authenticated GitHub tooling carries out the merge after
+existing protections pass. Independent reviewers and CI provide evidence but
+cannot impersonate the owner or fabricate a GitHub approval. A changed PR head
+requires refreshed technical checks, not a repeated owner prompt. This is a
+standing repository-wide operating instruction, not a per-PR exception.
 
 - L0–L2: task authorization plus required CI/evidence.
 - L3: task authorization, risk rationale and required technical evidence.
@@ -98,11 +103,13 @@ existing rule against agent self-approval remains in force.
 The automated owner process records task authorization against the repository, PR,
 exact head and risk, authenticated owner, timestamp and nonce. The manual release
 path uses the explicit task authorization and records technical release evidence.
-The initiating task authorization is the owner decision for routine in-scope work; agents must never
-invent or broaden it. auto_merge=false and required_human_merge=true remain
-mandatory, and the owner retains final merge authority through the existing
-connector. The same task authorization covers the resulting exact merge SHA's
-deployment after merged-main CI and all technical safety gates pass. A new user
+The initiating task authorization is the owner decision for routine in-scope work;
+agents must never invent or broaden it. Existing auto_merge=false and
+required_human_merge=true controls for autonomous-agent pathways remain in force;
+they do not require repeated owner clicks or per-PR review requests. The owner's
+authenticated GitHub connection may perform the authorized merge. The same task
+authorization covers deployment of the exact merge SHA after merged-main CI and
+all technical safety gates pass. A new user
 decision is required only when the proposed action is genuinely high-risk and
 outside the original scope, including live-trading activation, financial-safety
 control changes or secret exposure. A No-Go blocks the action. Owner, merge and
@@ -120,7 +127,8 @@ authorization and retain its existing financial review and canary gates. Ask for
 new decision only if proposed behavior exceeds that authorization.
 Evaluate the whole change and its indirect effects; file names, small diffs and
 splitting changes across commits do not make financial behavior low risk. Unknown
-or mixed scope receives the highest applicable controls pending human review.
+or mixed scope receives the highest applicable controls and must not proceed
+outside the authorized task scope.
 Existing Advisor, Critic, CC, execution and release canaries remain mandatory when
 applicable. Neither this contract nor a passing test grants execution authority.
 
@@ -145,10 +153,12 @@ an agent cannot relax its own authority or self-authorize an exception.
 
 A CSS-only mobile layout fix uses a task branch, a scoped plan, viewport checks,
 focused and required regression tests, diff review, SHA-bound evidence and a PR.
-It grants no database-write or deployment permission. If a UI edit also changes a
+It grants no database-write permission; its authorized deployment is part of
+the routine release. If a UI edit also changes a
 recommendation calculation, apply investment-sensitive controls to the full diff.
 
-A covered-call sizing or risk-policy change requires explicit human review,
+A covered-call sizing or risk-policy change requires task authorization that
+specifically covers the financial behavior, independent technical review,
 existing financial behavioral contracts and applicable canaries in addition to the
 normal workflow. A conflicting TODO requesting weaker thresholds is blocked and
 escalated; preserve the existing thresholds. Never merge it on self-approval.
