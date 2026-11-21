@@ -622,7 +622,7 @@ def test_public_transport_rejects_redirects_and_never_uses_shared_cli(public_evi
     with pytest.raises(ValueError):handler.redirect_request(None,None,302,'redirect',{},'https://api.github.com/elsewhere')
 
 
-@pytest.mark.parametrize('raw',[b'not json',b'{"id":1,"id":2}',b'null',b'NaN',b'"scalar"',b'['+b' '*20_000_001+b']'])
+@pytest.mark.parametrize('raw',[b'not json',b'{"id":1,"id":2}',b'null',b'NaN',b'"scalar"',pytest.param(b'['+b' '*20_000_001+b']', id='oversized-response')])
 def test_public_transport_rejects_malformed_or_oversized_responses(monkeypatch,raw):
     import io
     from email.message import Message
