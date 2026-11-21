@@ -2554,7 +2554,7 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
   <div onclick="event.stopPropagation()"
     style="background:#fff;border-radius:12px;padding:28px 32px;max-width:480px;width:95%;box-shadow:0 8px 40px rgba(0,0,0,.2);position:relative;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
-      <h2 style="font-size:1.05rem;font-weight:700;color:#1a2340;margin:0;">Close Position</h2>
+      <h2 id="cc-close-title" style="font-size:1.05rem;font-weight:700;color:#1a2340;margin:0;">Close Position</h2>
       <button onclick="closeCCModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#aaa;padding:4px 8px;">✕</button>
     </div>
     <div id="cc-close-summary" style="background:#f8fafc;border-radius:8px;padding:12px 16px;margin-bottom:18px;font-size:13px;"></div>
@@ -2601,7 +2601,7 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
 
     <div id="cc-close-preview" style="display:none;background:#f0fff4;border:1px solid #ade;border-radius:7px;padding:10px 14px;margin-bottom:14px;font-size:13px;"></div>
 
-    <button onclick="confirmCCClose()"
+    <button id="cc-close-confirm" onclick="confirmCCClose()"
       style="width:100%;padding:10px;background:#1a2340;color:#fff;border:none;border-radius:7px;font-size:14px;font-weight:700;cursor:pointer;">
       Confirm Close
     </button>
@@ -2658,6 +2658,10 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     <button onclick="saveCCEdit()"
       style="width:100%;padding:10px;background:#1a2340;color:#fff;border:none;border-radius:7px;font-size:14px;font-weight:700;cursor:pointer;">
       Save Changes
+    </button>
+    <button id="cc-edit-assign" onclick="correctCCAssignment()" hidden
+      style="width:100%;margin-top:8px;padding:9px;background:#fff;color:#1a2340;border:1px solid #dde;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;">
+      Record Assignment
     </button>
     <button onclick="deleteCCPosition()"
       style="width:100%;margin-top:8px;padding:9px;background:#fff;color:#e74c3c;border:1px solid #fcc;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;">
@@ -6661,10 +6665,15 @@ async function logCCPosition() {{
 
 // ── CC Close Modal ────────────────────────────────────────────────────────
 function openCCCloseModal(id) {{
-  _ccCloseTargetId = id;
-  _ccCloseType     = null;
   const p = _allCCPositions.find(x => x.id === id);
-  if (!p) return;
+  if (!p || !["open", "expired"].includes(p.status) ||
+      document.getElementById("cc-close-confirm").disabled) return;
+  const correction = p.status === "expired";
+  _ccCloseTargetId = id;
+  _ccCloseType = null;
+  document.getElementById("cc-close-title").textContent = correction ? "Record Assignment" : "Close Position";
+  document.getElementById("cc-close-confirm").textContent = correction ? "Confirm Assignment" : "Confirm Close";
+  document.getElementById("cc-assign-fifo-check").checked = !correction;
 
   const gross = (p.premium_per_contract * p.contracts * 100).toFixed(2);
   document.getElementById("cc-close-summary").innerHTML =
@@ -6678,7 +6687,9 @@ function openCCCloseModal(id) {{
      <span style="color:#888;margin:0 8px;">·</span>
      gross <b style="color:#1a6e38;">$${{gross}}</b>`;
 
-  document.getElementById("cc-close-date").value  = new Date().toISOString().slice(0,10);
+  const today = new Date();
+  const localToday = new Date(today.getTime() - today.getTimezoneOffset() * 60000);
+  document.getElementById("cc-close-date").value = localToday.toISOString().slice(0,10);
   document.getElementById("cc-close-price").value = "";
   document.getElementById("cc-close-status").textContent = "";
   document.getElementById("cc-close-preview").style.display   = "none";
@@ -6688,11 +6699,13 @@ function openCCCloseModal(id) {{
   // Reset type button styles
   ["expired","buyback","assigned"].forEach(t => {{
     const el = document.getElementById("cc-type-" + t);
+    el.hidden = correction && t !== "assigned";
     el.style.borderColor = "#dde";
     el.style.background  = "#fff";
     el.style.color       = "#333";
   }});
 
+  if (correction) setCCCloseType("assigned");
   document.getElementById("cc-close-overlay").style.display = "flex";
 }}
 
@@ -6714,12 +6727,18 @@ function openCCEditModal(id) {{
   document.getElementById("cc-edit-opened-date").value = p.opened_date;
   document.getElementById("cc-edit-notes").value       = p.notes || "";
   document.getElementById("cc-edit-status").textContent = "";
+  document.getElementById("cc-edit-assign").hidden = p.status !== "expired";
   document.getElementById("cc-edit-overlay").style.display = "flex";
 }}
 
 function closeCCEditModal(e) {{
   if (!e || e.target === document.getElementById("cc-edit-overlay"))
     document.getElementById("cc-edit-overlay").style.display = "none";
+}}
+
+function correctCCAssignment() {{
+  closeCCEditModal();
+  openCCCloseModal(_ccEditTargetId);
 }}
 
 async function saveCCEdit() {{
@@ -6818,22 +6837,32 @@ function _updateCCClosePreview() {{
 document.getElementById("cc-close-price")?.addEventListener("input", _updateCCClosePreview);
 
 async function confirmCCClose() {{
+  const confirmButton = document.getElementById("cc-close-confirm");
+  const p = _allCCPositions.find(x => x.id === _ccCloseTargetId);
+  if (confirmButton.disabled || !p || !["open", "expired"].includes(p.status)) return;
   if (!_ccCloseType) {{
     document.getElementById("cc-close-status").textContent = "⚠ Select how the position closed.";
     return;
   }}
   const closeDate  = document.getElementById("cc-close-date").value;
+  if (!closeDate) {{
+    document.getElementById("cc-close-status").textContent = "Select a close date.";
+    return;
+  }}
+  const recordSale = _ccCloseType === "assigned" && document.getElementById("cc-assign-fifo-check").checked;
   const closePrice = _ccCloseType === "buyback"
     ? parseFloat(document.getElementById("cc-close-price").value) || 0 : 0;
 
   const statusMap = {{ expired: "expired", buyback: "closed", assigned: "assigned" }};
   const body = {{
+    expected_status: p.status,
     status:      statusMap[_ccCloseType],
     close_type:  _ccCloseType,
     closed_date: closeDate,
     closed_price: closePrice > 0 ? closePrice : null,
   }};
 
+  confirmButton.disabled = true;
   document.getElementById("cc-close-status").textContent = "Saving…";
   try {{
     const res  = await fetch(`/api/cc-positions/${{_ccCloseTargetId}}`, {{
@@ -6846,38 +6875,32 @@ async function confirmCCClose() {{
       return;
     }}
 
-    // If assigned and user wants to record the stock sale in the FIFO tracker
-    if (_ccCloseType === "assigned") {{
-      const fifoCheck = document.getElementById("cc-assign-fifo-check");
-      if (fifoCheck?.checked) {{
-        const p = _allCCPositions.find(x => x.id === _ccCloseTargetId);
-        if (p) {{
-          document.getElementById("cc-close-status").textContent = "Recording stock sale…";
-          try {{
-            const sellRes = await fetch("/api/sells", {{
-              method: "POST", headers: {{"Content-Type":"application/json"}},
-              body: JSON.stringify({{
-                ticker:     p.ticker,
-                shares_sold: p.contracts * 100,
-                sell_price: p.strike,
-                sell_date:  closeDate,
-              }}),
-            }});
-            const sellData = await sellRes.json();
-            if (!sellData.ok) {{
-              document.getElementById("cc-close-status").textContent =
-                "CC closed. Stock sell error: " + sellData.error;
-              await loadCCPositions();
-              await loadAllSells();
-              return;
-            }}
-          }} catch(e2) {{
-            document.getElementById("cc-close-status").textContent = "CC closed. Sell error: " + e2.message;
-            await loadCCPositions();
-            await loadAllSells();
-            return;
-          }}
+    p.status = body.status;
+    if (recordSale) {{
+      document.getElementById("cc-close-status").textContent = "Recording stock sale…";
+      try {{
+        const sellRes = await fetch("/api/sells", {{
+          method: "POST", headers: {{"Content-Type":"application/json"}},
+          body: JSON.stringify({{
+            ticker:     p.ticker,
+            shares_sold: p.contracts * 100,
+            sell_price: p.strike,
+            sell_date:  closeDate,
+          }}),
+        }});
+        const sellData = await sellRes.json();
+        if (!sellData.ok) {{
+          document.getElementById("cc-close-status").textContent =
+            "CC closed. Stock sell error: " + sellData.error;
+          await loadCCPositions();
+          await loadAllSells();
+          return;
         }}
+      }} catch(e2) {{
+        document.getElementById("cc-close-status").textContent = "CC closed. Sell error: " + e2.message;
+        await loadCCPositions();
+        await loadAllSells();
+        return;
       }}
     }}
 
@@ -6886,6 +6909,8 @@ async function confirmCCClose() {{
     await loadAllSells();
   }} catch(e) {{
     document.getElementById("cc-close-status").textContent = "Error: " + e.message;
+  }} finally {{
+    confirmButton.disabled = false;
   }}
 }}
 
