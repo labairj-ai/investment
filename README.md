@@ -210,7 +210,18 @@ it does not reuse investment-learning tables. The initial queue is empty until
 development candidates are recorded; repository TODOs are listed in the
 [backlog index](.todos/README.md).
 
-**Verified deployment — October 23, 2026 (ET):** OptiPlex runs merged `main` SHA
+**Access from another device** requires Tailscale on the same tailnet as OptiPlex
+and an authorized operator login. The Control Center uses private Tailscale Serve
+on HTTPS port 9443. The Investment Dashboard uses public Tailscale Funnel on
+HTTPS port 443 and can load while the private Control Center is unreachable.
+Connect Tailscale first, then open the Control Center link above.
+
+**Known issue as of November 21, 2026.** The Control Center overview opens, but
+its candidate counts and Candidates view are unavailable when the ledger query
+exceeds SQLite's read limit. The fix is tracked in
+[PR #68](https://github.com/labairj-ai/investment/pull/68).
+
+**Historical deployment — October 23, 2026 (ET).** OptiPlex deployed merged `main` SHA
 `15df8960b7c376da8b15fd80dad1bfb19aaede9b` from
 [PR #10](https://github.com/labairj-ai/investment/pull/10).
 [Exact-head CI](https://github.com/labairj-ai/investment/actions/runs/39994931332)
@@ -280,17 +291,26 @@ The recommended setup is an always-on home server (e.g. a mini PC or Raspberry P
 
 - **Server:** clone repo, build venv from `requirements.txt`, run `serve.py` as a systemd service on port 5001
 - **Newsletter:** serve.py's built-in scheduler sends at ~7:15 AM ET; `run_investment.sh` via a systemd timer at 8 AM acts as a backstop (flag file `out/last_run_date.txt` prevents double sends)
-- **LAN / remote access:** by default `serve.py` binds to `localhost`; change to `0.0.0.0` to expose on the LAN; use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) or a reverse proxy for remote access
+- **OptiPlex access** uses a loopback backend on port 5001. Public Tailscale Funnel on HTTPS port 443 serves the Investment Dashboard. Private Tailscale Serve on HTTPS port 9443 serves the authenticated Development Agent Control Center.
 - **Data backup:** `backup_data.sh` pushes DB + CSV to a separate private GitHub repo
 - **Deploy flow:** use the existing owner connector and exact-SHA release validation. The initiating task authorization covers routine implementation, merge and deployment; no second per-PR Go is required. Back up production, verify the worktree and runtime overlays, deploy that exact commit, then restart and verify the service when `serve.py` or an imported Python module changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
 
-The current Development Agent release is the owner-merged `main` SHA above. Deploy
-only the approved merged SHA after exact-SHA release gates pass; preserve runtime
-overlays and verify health, authentication, canaries and protected-state integrity.
-Code rollback must not restore or overwrite production investment data. The PR #10
-backup and deployment receipt are outside the HTTP root under
-`~/.local/share/investment-releases/pr10-20261023T175628Z/`. Automation service
-installation and activation require separate operational acceptance and owner approval.
+**OptiPlex release observed November 21, 2026 (ET).** The service and Scout source
+pin are on `237b543162fda33fcddf3652ec90acbc510b330a` from
+[PR #67](https://github.com/labairj-ai/investment/pull/67).
+[Merged-main CI](https://github.com/labairj-ai/investment/actions/runs/44918964212),
+the dashboard and authentication checks, and the read-only Advisor canary passed.
+The Saturday refresh changed operational data during deployment, so the full
+database comparison differed. The separate comparison verified unchanged holdings,
+covered-call positions, cost lots, sales, and trading records. Release evidence and
+backups are on OptiPlex under
+`~/.local/share/investment-releases/pr67-20261121T155334Z/`.
+
+Deploy the approved merged SHA after exact-SHA CI passes. Follow the
+[owner release workflow](docs/solo-owner-governance.md) to preserve runtime overlays
+and verify service health, authentication, canaries, and protected state.
+Rollback restores code only. Automation service installation and activation
+require separate operational acceptance and owner approval.
 
 The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 
@@ -870,6 +890,12 @@ Today's option P&L is also added to the **Daily Change KPI** at the top of the d
 - **Assigned** — stock called away at strike; full premium kept; optionally records the stock sale in the FIFO tracker at the strike price (the resulting stock capital gain/loss flows into ST/LT section)
 
 **Auto-expiry:** On every page load, any open position whose expiry date has passed is automatically recorded as expired (full premium kept, `closed_date` set to the actual expiry date). A toast notification appears and prompts you to verify if any were actually assigned.
+
+**Correct an expired call that was assigned.** In **Expired Worthless**, open
+the row's **✎ Edit** dialog and choose **Record Assignment**. Confirm the broker's
+assignment date. The dashboard uses the call's strike as the share sale price.
+Check **Record the stock sale in the FIFO tracker** if the sale is missing from
+the tracker. The checkbox starts unchecked for corrections.
 
 **Net P&L column:** Closed positions show actual net realized income, with buyback cost called out in red when applicable. The summary bar shows open gross premium and net realized income separately.
 
