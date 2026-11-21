@@ -3,7 +3,8 @@ ARG SYSTEMD_VERSION=255.4-1ubuntu8.18
 ENV DEBIAN_FRONTEND=noninteractive container=docker
 RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod 755 /usr/sbin/policy-rc.d \
  && apt-get update \
- && apt-get install -y --no-install-recommends systemd=${SYSTEMD_VERSION} systemd-sysv=${SYSTEMD_VERSION} dbus python3 passwd \
+ && apt-get install -y --no-install-recommends systemd=${SYSTEMD_VERSION} systemd-sysv=${SYSTEMD_VERSION} \
+    libsystemd-shared=${SYSTEMD_VERSION} dbus python3 passwd \
  && test "$(dpkg-query -W -f='${Version}' systemd)" = "${SYSTEMD_VERSION}" \
  && userdel ubuntu && useradd --uid 1000 --create-home fixture \
  && mkdir -p /opt/provenance-proof /var/lib/provenance-proof \

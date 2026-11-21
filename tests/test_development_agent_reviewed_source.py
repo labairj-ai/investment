@@ -16,7 +16,7 @@ def add(root,name,text):
 @pytest.mark.parametrize('body',[
     'Export redaction blocks credentials/bearer tokens/headers, raw prompts.',
     'Synthetic credential example: password=fixture-only',
-    'Large reviewed TODO prose.\n'*2000,
+    pytest.param('Large reviewed TODO prose.\n'*2000, id='large-todo'),
 ])
 def test_active_todo_hash_does_not_validate_or_persist_document_text(repo,body):
     text='- **Status:** in-progress\n'+body

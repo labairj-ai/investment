@@ -47,7 +47,7 @@ def test_summary_cannot_pass_missing_gate_or_wrong_sha():
     report['expected_head']='b';assert not aggregate.integrity(report)
 
 
-@pytest.mark.parametrize('raw,exit_code',[('<testsuite><testcase classname="tests.t" name="x"/></testsuite>',0),('<testsuite/>',0),('<testsuite><testcase classname="tests.t" name="x"/><testcase classname="tests.t" name="x"/></testsuite>',0),('<testsuite><testcase classname="tests.t" name="x"><failure/></testcase></testsuite>',0),('',1),('x'*2_000_001,0)])
+@pytest.mark.parametrize('raw,exit_code',[('<testsuite><testcase classname="tests.t" name="x"/></testsuite>',0),('<testsuite/>',0),('<testsuite><testcase classname="tests.t" name="x"/><testcase classname="tests.t" name="x"/></testsuite>',0),('<testsuite><testcase classname="tests.t" name="x"><failure/></testcase></testsuite>',0),('',1),pytest.param('x'*2_000_001, 0, id='oversized-junit')])
 def test_candidate_xml_exit_zero_and_forged_inventory_never_authorize(raw,exit_code):
     result=result_collector.normalize(raw.encode(),['tests.t::x'],returncode=exit_code)
     assert result['status'] in {'FAIL','UNAVAILABLE'}

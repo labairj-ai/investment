@@ -10773,7 +10773,7 @@ async function rejectThesisProposal(recId) {{
 
     // What Changed — grouped by ticker (multiple items for same ticker → single card)
     if (ins.what_changed && ins.what_changed.length) {{
-      const _tcRe = /^([A-Z][A-Z0-9.\-]{{1,9}})\s/;
+      const _tcRe = /^([A-Z][A-Z0-9.\\-]{{1,9}})\\s/;
       const byTicker = new Map();
       ins.what_changed.forEach((c, i) => {{
         const m = c.match(_tcRe);
@@ -11083,10 +11083,10 @@ async function rejectThesisProposal(recId) {{
     // Simple markdown → HTML: headers, bold, bullets, line breaks
     let html = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
       .replace(/^#{{1,3}} (.+)$/gm, '<div style="font-weight:700;margin:.6rem 0 .2rem;font-size:13px;color:#1a2340">$1</div>')
       .replace(/^[-•] (.+)$/gm, '<li style="margin-bottom:.25rem">$1</li>')
-      .replace(/(<li[\s\S]+?<\/li>)/g, '<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0">$1</ul>')
+      .replace(/(<li[\\s\\S]+?<\\/li>)/g, '<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0">$1</ul>')
       .replace(/\\n\\n+/g, '</p><p style="margin:.5rem 0">')
       .replace(/\\n/g, '<br>');
     return '<p style="margin:.25rem 0">' + html + '</p>';
