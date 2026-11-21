@@ -180,6 +180,21 @@ def test_paging_stable_with_appends(center, store):
     with pytest.raises(ValueError): center.candidates(urlencode(dict(sort='risk',cursor=first['next_cursor'])))
 
 
+def test_candidates_stay_within_read_budget_after_scheduler_history(center, store):
+    for number in range(35):
+        candidate(store, number)
+    with store.connect(write=True) as db:
+        db.executemany(
+            "INSERT INTO dev_events(event_id, kind, created, payload) VALUES (?, ?, ?, ?)",
+            ((f'scheduler-{i}', 'SCHEDULER_OBSERVATION', i + 1, '{}') for i in range(2500)),
+        )
+
+    page = center.candidates('limit=5&sort=risk&disposition=AWAITING_REVIEW')
+    assert page['total'] == 35
+    assert len(page['items']) == 5
+    assert page['next_cursor']
+
+
 def test_risk_value_filters_search_and_unknown(center, store):
     a=candidate(store,1);b=candidate(store,2)
     store.event(a,'PLAN',{'context':{'risk':'L5','head':'a'*40}},'plan-a')
