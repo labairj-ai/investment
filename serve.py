@@ -2455,8 +2455,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         values.append(net)
                 if not updates:
                     return self._json_error(400, "No updatable fields provided")
+                where = "id = ?"
                 values.append(pos_id)
-                conn.execute(f"UPDATE cc_positions SET {', '.join(updates)} WHERE id = ?", values)
+                if "expected_status" in body:
+                    where += " AND status = ?"
+                    values.append(body["expected_status"])
+                result = conn.execute(f"UPDATE cc_positions SET {', '.join(updates)} WHERE {where}", values)
+                if "expected_status" in body and result.rowcount != 1:
+                    return self._json_error(409, "Position changed. Refresh it before recording the close.")
                 conn.commit()
             finally:
                 conn.close()
