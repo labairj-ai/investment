@@ -1726,7 +1726,7 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
           <td class="col-hide-sm">${h["avg_cost"]:,.2f}</td>
           <td>${h["price"]:,.2f}</td>
           <td>{money(h["value"])}</td>
-          <td class="{gain_class}" style="font-weight:600;">{pct(h["total_gain_pct"])} <span id="stlt-{h["ticker"]}" style="font-size:9px;vertical-align:middle;"></span></td>
+          <td class="holding-gain {gain_class}">{pct(h["total_gain_pct"])} <span id="stlt-{h["ticker"]}"></span></td>
           <td class="{daily_class}">{pct(h["change_pct"])}</td>
           <td class="col-hide-sm">{h["weight_pct"]:.1f}%</td>
           <td class="col-hide-sm" id="earn-{h["ticker"]}" style="font-size:12px;color:#7f8c8d;">—</td>
@@ -1942,6 +1942,15 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     td {{ padding: 7px 10px; border-bottom: 1px solid #f2f4f7; }}
     tr:last-child td {{ border-bottom: none; }}
     .layer-header td {{ font-size: .8rem; }}
+    .holding-gain {{ font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }}
+    .holding-tax-badge {{
+      display: inline-block; vertical-align: middle; padding: 1px 5px;
+      border: 1px solid; border-radius: 4px; font-size: 9px; font-weight: 700;
+      line-height: 1.25; letter-spacing: .03em;
+    }}
+    .holding-tax-badge--mixed {{ background: #fff3cd; color: #7d5a00; border-color: #e6ac00; }}
+    .holding-tax-badge--st {{ background: #fff0f0; color: #a61b1b; border-color: #fcc; }}
+    .holding-tax-badge--lt {{ background: #f0fff4; color: #17653a; border-color: #ade; }}
     .dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }}
 
     .flags {{ margin-top: 10px; }}
@@ -4783,13 +4792,12 @@ function renderAllStltBadges() {{
     const hasLT = lots.some(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 > 365);
     const stCount = lots.filter(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 <= 365).length;
     if (hasST && hasLT) {{
-      el.innerHTML = `<span title="Mixed holding: ${{stCount}} short-term lot${{stCount!==1?'s':''}} — click Lots for details"
-        style="background:#fff3cd;color:#7d5a00;border:1.5px solid #e6ac00;border-radius:4px;padding:2px 7px;font-weight:700;font-size:9px;letter-spacing:.03em;cursor:default;">
-        ⚠ MIXED</span>`;
+      el.innerHTML = `<span class="holding-tax-badge holding-tax-badge--mixed"
+        title="Mixed holding: ${{stCount}} short-term lot${{stCount!==1?'s':''}} — click Lots for details">⚠ MIXED</span>`;
     }} else if (hasST) {{
-      el.innerHTML = `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px;">ST</span>`;
+      el.innerHTML = `<span class="holding-tax-badge holding-tax-badge--st" title="Short-term lots">ST</span>`;
     }} else {{
-      el.innerHTML = `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px;">LT</span>`;
+      el.innerHTML = `<span class="holding-tax-badge holding-tax-badge--lt" title="Long-term lots">LT</span>`;
     }}
   }}
 }}
