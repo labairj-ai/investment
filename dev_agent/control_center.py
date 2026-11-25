@@ -202,15 +202,18 @@ class ControlCenter:
             # Correlated reads are bound to the snapshot sequence, so appends cannot
             # move a candidate between pages. Unknown risk/value sort last.
             def event(kind, path):
-                return f"(SELECT json_extract(e.payload,'{path}') FROM dev_events e WHERE e.candidate=c.id AND e.kind='{kind}' AND e.seq<=? ORDER BY e.seq DESC LIMIT 1)"
-            cte = f"""WITH rows AS (SELECT c.id,c.created,c.payload,
+                return f"(SELECT json_extract(e.payload,'{path}') FROM latest l JOIN dev_events e ON e.seq=l.seq WHERE l.candidate=c.id AND l.kind='{kind}')"
+            cte = f"""WITH latest AS MATERIALIZED (
+                SELECT candidate,kind,max(seq) AS seq,max(created) AS updated
+                FROM dev_events WHERE seq<=? AND candidate IS NOT NULL GROUP BY candidate,kind
+                ), rows AS MATERIALIZED (SELECT c.id,c.created,c.payload,
                 {event('STATE', '$.state')} AS state,
                 coalesce({event('PLAN', '$.context.risk')},{event('SCORE', '$.risk.risk')},'UNKNOWN') AS risk,
                 {event('ITERATION', '$.status')} AS review_status,
                 {event('SCORE', '$.score')} AS value,
                 {event('SCORE', '$.version')} AS score_version,
                 {event('SCORE', '$.confidence')} AS evidence_quality,
-                (SELECT max(e.created) FROM dev_events e WHERE e.candidate=c.id AND e.seq<=?) AS updated,
+                (SELECT max(l.updated) FROM latest l WHERE l.candidate=c.id) AS updated,
                 json_extract(c.payload,'$.title') AS title,
                 json_extract(c.payload,'$.category') AS category,
                 json_extract(c.payload,'$.source') AS source FROM dev_candidates c),
@@ -224,7 +227,7 @@ class ControlCenter:
                     WHEN review_status IS NOT NULL OR state IN ('PLANNED','NEEDS_HUMAN','ROLLED_BACK') THEN 'REVIEWED'
                     ELSE 'AWAITING_REVIEW' END AS disposition, CASE WHEN risk GLOB 'L[0-5]' THEN cast(substr(risk,2) AS INTEGER) ELSE -1 END AS risk_order,
                     CASE WHEN typeof(value) IN ('real','integer') THEN value ELSE -1 END AS value_order FROM rows WHERE state IS NOT NULL) """
-            conditions = ['1=1']; args = [seq]*8
+            conditions = ['1=1']; args = [seq]
             if q.get('active')=='true':
                 conditions.append("state NOT IN ('CLOSED','REJECTED','ROLLED_BACK')")
             for field in ('state', 'risk', 'category', 'source', 'disposition'):
