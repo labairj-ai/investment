@@ -6,6 +6,11 @@ owner does not need to repeat it after CI, after merge, or before deployment.
 
 ## Routine release
 
+User-requested dashboard presentation fixes can use the [direct UI workflow](../AGENTS.md#direct-ui-fixes).
+Review the diff and run focused tests before a fast-forward push to main.
+Wait for required CI on the resulting main commit, then follow the deployment
+and verification steps below.
+
 1. Review the complete diff, verify the exact PR head, and confirm that its
    required CI and domain checks pass. Merge through the existing protected PR
    path using the reviewed head SHA.
@@ -15,7 +20,7 @@ owner does not need to repeat it after CI, after merge, or before deployment.
 3. Use the installed release tooling. For an explicitly authorized manual
    OptiPlex release, use the existing SSH access and source synchronization
    tooling. Verify the tracked production worktree and source influence, back
-   up protected state, deploy the exact tested merge SHA, and verify the
+   up protected state, deploy the exact tested main SHA, and verify the
    service, application, protected data, and trading and autonomy settings.
    Follow the existing observation and rollback checks. Roll back code if a
    health or state-integrity check fails.

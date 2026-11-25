@@ -49,7 +49,8 @@ def test_duplicate_sections_fail():
 def test_low_and_high_risk_applications_preserve_controls():
     examples = CONTRACT.split('## Representative applications\n', 1)[1]
     assert 'CSS-only' in examples and 'viewport checks' in examples
-    assert 'SHA-bound evidence and a PR' in examples
+    assert 'focused tests, diff review' in examples
+    assert 'direct UI workflow' in examples
     assert 'covered-call sizing or risk-policy change' in examples
     assert 'requires explicit human review' in examples
     assert 'preserve the existing thresholds' in examples

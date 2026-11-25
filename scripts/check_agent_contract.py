@@ -29,9 +29,14 @@ REQUIRED = {
         'do not request an intermediate owner approval for routine work.',
         'Move a TODO to `.todos/done/` only after every acceptance and QA requirement is met with implementation and CI evidence.',
     ),
+    'Direct UI fixes': (
+        'User-requested fixes limited to dashboard layout, styling or presentation markup may go directly to main as a reviewed, fast-forward push.',
+        'Run the required regression and release checks on the resulting main commit before deployment.',
+        'Changes to calculations, data handling, investment behavior, security, or operational controls use the regular PR workflow.',
+    ),
     'Authority boundaries': ('The coding agent may implement, test, merge and deploy changes within an explicitly authorized task through the existing release path.',),
     'Forbidden actions': (
-        'Do not implement directly on main or push implementation directly to main.',
+        'Do not push implementation directly to main outside the direct UI workflow.',
         'Do not fabricate owner approval evidence, self-approve or bypass CI, security checks or existing GitHub protections.',
         'Do not delete or weaken tests to obtain PASS.',
         'Do not silently rewrite baselines or reduce acceptance thresholds.',

@@ -38,7 +38,7 @@ remains part of an authorized software task.
 5. Record exact implementation SHA, commands, results, skip/waiver inventory and
    real CI workflow URL before claiming PR readiness. Evidence is valid only for
    the tested source/configuration; changed code requires refreshed evidence.
-6. Use PR-based changes and satisfy required CI, security checks and existing
+6. Use PR-based changes except for the direct UI workflow below. Satisfy required CI, security checks and existing
    branch protections. An explicit user task authorizes its normal implementation,
    testing, merging and deployment within that task's scope; do not request an
    intermediate owner approval for routine work. Follow the release paths in
@@ -47,6 +47,16 @@ remains part of an authorized software task.
    is met with implementation and
    CI evidence. Incomplete or unavailable checks remain explicitly open, never
    silently marked PASS.
+
+## Direct UI fixes
+
+User-requested fixes limited to dashboard layout, styling or presentation markup
+may go directly to main as a reviewed, fast-forward push. Check the diff and run
+focused tests, including viewport checks for responsive changes, before pushing.
+Run the required regression and release checks on the resulting main commit
+before deployment. This path requires no PR or separate owner merge.
+Changes to calculations, data handling, investment behavior, security, or
+operational controls use the regular PR workflow.
 
 ## Authority boundaries
 
@@ -58,7 +68,7 @@ authorizes that specific high-risk action and all existing safeguards admit it.
 
 ## Forbidden actions
 
-- Do not implement directly on main or push implementation directly to main.
+- Do not push implementation directly to main outside the direct UI workflow.
 - Do not fabricate owner approval evidence, self-approve or bypass CI, security
   checks or existing GitHub protections.
 - Do not delete or weaken tests to obtain PASS.
@@ -99,7 +109,7 @@ The automated owner process records task authorization against the repository, P
 exact head and risk, authenticated owner, timestamp and nonce. The manual release
 path uses the explicit task authorization and records technical release evidence.
 The initiating task authorization is the owner decision for routine in-scope work; agents must never
-invent or broaden it. auto_merge=false and required_human_merge=true remain
+invent or broaden it. For PR-based releases, auto_merge=false and required_human_merge=true remain
 mandatory, and the owner retains final merge authority through the existing
 connector. The same task authorization covers the resulting exact merge SHA's
 deployment after merged-main CI and all technical safety gates pass. A new user
@@ -143,9 +153,8 @@ an agent cannot relax its own authority or self-authorize an exception.
 
 ## Representative applications
 
-A CSS-only mobile layout fix uses a task branch, a scoped plan, viewport checks,
-focused and required regression tests, diff review, SHA-bound evidence and a PR.
-It grants no database-write or deployment permission. If a UI edit also changes a
+A CSS-only mobile layout fix uses viewport checks, focused tests, diff review,
+and the direct UI workflow. If a UI edit also changes a
 recommendation calculation, apply investment-sensitive controls to the full diff.
 
 A covered-call sizing or risk-policy change requires explicit human review,
