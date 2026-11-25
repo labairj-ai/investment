@@ -1,0 +1,8 @@
+{
+  "version": "development-watchdog-1",
+  "execution_grace_seconds": 900,
+  "missed_run_red_seconds": 7200,
+  "collector_delayed_seconds": 4500,
+  "spool_warning_seconds": 108000,
+  "scheduler_warning_seconds": 1800
+}

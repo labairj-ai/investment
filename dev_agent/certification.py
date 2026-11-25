@@ -25,6 +25,7 @@ def harness_hash(root):
     root = Path(root)
     files = [root / p for p in ("AGENTS.md", "config/development_agent.json", "docs/development-agent.md", "serve.py", "generate_dashboard.py", "scripts/check_development_agent.py", "scripts/check_agent_contract.py", "tests/test_development_agent.py", ".github/workflows/test.yml")]
     files += [root/"docs/owner-autonomy-promotion.md"] if (root/"docs/owner-autonomy-promotion.md").is_file() else []
+    files += [root/p for p in ('config/development_watchdog.json','operational_watchdog.py','scripts/macro_health_watchdog.py') if (root/p).is_file()]
     files += sorted((root / "dev_agent").glob("*.py"))
     files += sorted((root / "tests").glob("test_development_agent*.py"))
     files += [root/'tests'/n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py','test_live_operational_acceptance.py','test_pr13_evidence_integrity.py') if (root/'tests'/n).is_file()]

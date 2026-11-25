@@ -168,11 +168,16 @@ def start_candidate(repo,store,mode='SUPERVISED',risk='L0'):
     return cid,ctx
 
 
-def test_supervised_admission_does_not_require_autonomy(repo,store,monkeypatch):
+def test_supervised_admission_does_not_require_autonomy(repo,store,monkeypatch,tmp_path):
     cid,ctx=start_candidate(repo,store)
     (repo/'config').mkdir(exist_ok=True);(repo/'config/development_agent.json').write_text((ROOT/'config/development_agent.json').read_text())
     monkeypatch.setattr(operations,'policy',lambda root:json.loads((ROOT/'config/development_agent.json').read_text()))
     monkeypatch.setattr(certification,'harness_hash',lambda root:'fixture-harness')
+    config=json.loads((ROOT/'config/development_agent.json').read_text());config.update(supervised_loop_enabled=True,supervised_publish_pr=True)
+    monkeypatch.setattr(operations,'policy',lambda root:config)
+    from test_development_agent_watchdog import ready_watchdog_fixture
+    from dev_agent.discovery import git
+    ready_watchdog_fixture(monkeypatch,tmp_path,config,git(repo,'rev-parse','HEAD'),time.time())
     cert=dict(version='harness-canary-2',kind='TECHNICAL',status='PASS',harness_hash='fixture-harness',created=time.time()-1,components={k:'PASS' for k in certification.TECHNICAL_COMPONENTS},evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1)));cert['id']=digest(cert)
     record=operations.authorize_start(repo,store,cid,'SUPERVISED',[cert],protection_observation(),human=fixture_human())
     assert record['mode']=='SUPERVISED' and record['context']==ctx
@@ -443,6 +448,8 @@ def test_readiness_eligible_fixture_requires_enabled_policy_and_fresh_evidence(s
     config['autonomy_stage']='PR'
     original_read=Path.read_text
     monkeypatch.setattr(Path,'read_text',lambda path,*a,**k:json.dumps(config) if path==ROOT/'config/development_agent.json' else original_read(path,*a,**k))
+    # Module import order must not retain another fixture's temporary hash function.
+    monkeypatch.setattr(stage_control,'harness_hash',certification.harness_hash)
     cert['evidence']['deployment_agent']=dict(status='PASS',harness_hash=certification.harness_hash(ROOT),created=now)
     cert['id']=digest({k:v for k,v in cert.items() if k!='id'})
     monkeypatch.setattr(stage_control,'certificates',lambda store:[cert])
@@ -450,7 +457,7 @@ def test_readiness_eligible_fixture_requires_enabled_policy_and_fresh_evidence(s
         for stage in ('SHADOW','BUILD_ONLY'):
             for n in range(3):store._append(db,None,'STAGE_OBSERVATION',dict(stage=stage,candidate=f'readiness-fixture-{stage}-{n}',harness_hash=cert['harness_hash'],fixture_only=False),f'readiness-stage:{stage}:{n}')
     result=readiness.readiness(ROOT,store,now)
-    assert result['status']=='AUTONOMY_ELIGIBLE' and result['autonomous_starts_allowed']
+    assert result['status']=='AUTONOMY_ELIGIBLE' and result['autonomous_starts_allowed'], result['blockers']
     config['autonomous_implementation']=False
     assert readiness.readiness(ROOT,store,now)['status']=='SUPERVISED_ONLY'
     stale=dict(cert,harness_hash='prior-version');stale['id']=digest({k:v for k,v in stale.items() if k!='id'})
