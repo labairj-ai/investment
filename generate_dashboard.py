@@ -1916,13 +1916,13 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     .gloss-term-body b {{ color:#1a2340; }}
 
     .grid {{ display: grid; gap: 18px; padding: 20px 28px; }}
-    .kpi-row {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 14px; }}
+    .kpi-row {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: 14px; }}
     .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
     .three-col {{ display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }}
     .goals-grid {{ display: grid; grid-template-columns: 1.65fr 1fr; gap: 16px; align-items: start; }}
 
     .card {{ background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); min-width: 0; }}
-    .kpi {{ background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); min-width: 0; }}
+    .kpi {{ background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); min-width: 0; overflow-wrap: anywhere; }}
     .kpi .label {{ font-size: .78rem; color: #7f8c8d; text-transform: uppercase; letter-spacing: .04em; }}
     .kpi .value {{ font-size: 1.5rem; font-weight: 700; margin-top: 4px; }}
     .kpi .sub {{ font-size: .82rem; margin-top: 2px; }}
@@ -1963,18 +1963,15 @@ def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     .generated {{ text-align: right; font-size: .75rem; color: #a0aec0; padding: 0 28px 16px; }}
 
     @media (max-width: 1200px) {{
-      .kpi-row {{ grid-template-columns: repeat(3, 1fr); }}
       .three-col {{ grid-template-columns: 1fr; }}
       .grid {{ padding: 16px 20px; gap: 14px; }}
     }}
     @media (max-width: 900px) {{
-      .kpi-row {{ grid-template-columns: repeat(3, 1fr); }}
       .two-col, .three-col, .goals-grid {{ grid-template-columns: 1fr; }}
       .grid {{ padding: 12px 14px; gap: 12px; }}
       header {{ padding: 14px 16px; }}
     }}
     @media (max-width: 600px) {{
-      .kpi-row {{ grid-template-columns: repeat(2, 1fr); }}
       .kpi {{ padding: 12px 14px; }}
       .kpi .label {{ font-size: .72rem; }}
       .kpi .value {{ font-size: 1.1rem; }}
